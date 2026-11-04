@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Penny Budget</title>
+  <meta name="description" content="A sleek home budget tracker. Snap your bank alerts and Penny logs the spend for you, privately on your device.">
+  <meta name="theme-color" content="#0b0b0e" media="(prefers-color-scheme: dark)">
+  <meta name="theme-color" content="#f4f4f7" media="(prefers-color-scheme: light)">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Penny">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <link rel="stylesheet" href="css/styles.css">
+  <script>
+    // Apply the saved theme before first paint to avoid a flash.
+    try {
+      var s = JSON.parse(localStorage.getItem('penny.v1') || '{}').settings || {};
+      if (s.theme === 'dark' || s.theme === 'light') document.documentElement.dataset.theme = s.theme;
+    } catch (e) {}
+  </script>
+</head>
+<body>
+  <div class="app">
+    <main id="view" class="view" tabindex="-1"></main>
+    <nav class="tabbar" aria-label="Main">
+      <button class="tab" data-tab="home" aria-label="Home"></button>
+      <button class="tab" data-tab="activity" aria-label="Activity"></button>
+      <button class="fab" id="fab" aria-label="Add expense"></button>
+      <button class="tab" data-tab="insights" aria-label="Insights"></button>
+      <button class="tab" data-tab="settings" aria-label="Settings"></button>
+    </nav>
+  </div>
+
+  <div id="sheet-root"></div>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <div id="drop" class="drop" aria-hidden="true"><div class="drop-inner">Drop screenshots to scan</div></div>
+  <input id="file-input" type="file" accept="image/*" multiple hidden>
+
+  <noscript>Penny needs JavaScript to run.</noscript>
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,11 @@
+{
+  "name": "ledger-budget",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Sleek home budget tracker that reads bank alert screenshots on-device.",
+  "type": "module",
+  "scripts": {
+    "start": "python3 -m http.server 8080",
+    "test": "node --test"
+  }
+}
