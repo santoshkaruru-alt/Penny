@@ -1,5 +1,5 @@
 import { store } from './store.js';
-import { CATEGORIES, CATEGORY_BY_ID, icon, guessCategory, merchantKey } from './categories.js';
+import { CATEGORIES, CATEGORY_BY_ID, COLOR_SLOTS, ICON_CHOICES, icon, guessCategory, merchantKey } from './categories.js';
 import { parseTransactions, toISODate } from './parser.js';
 import { readImage, warmUp } from './ocr.js';
 
@@ -19,7 +19,11 @@ const daysIn = (key) => { const [y, m] = key.split('-').map(Number); return new 
 const shiftMonth = (key, by) => { const [y, m] = key.split('-').map(Number); const d = new Date(y, m - 1 + by, 1); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`; };
 
 const fmtCache = new Map();
+const hidden = () => Boolean(S().hideAmounts);
+const MASK = '••••';
+/** Format money. Respects "hide amounts" unless opts.raw (used in edit forms). */
 function money(n, opts = {}) {
+  if (hidden() && !opts.raw) return `${currencySymbol()}${MASK}`;
   const cents = opts.cents ?? true;
   const k = `${S().currency}|${cents}`;
   if (!fmtCache.has(k)) {
@@ -32,6 +36,7 @@ function money(n, opts = {}) {
   return fmtCache.get(k).format(opts.abs ? Math.abs(n) : n);
 }
 function moneyParts(n) {
+  if (hidden()) return { main: `${currencySymbol()}${MASK}`, cents: '' };
   const f = new Intl.NumberFormat(undefined, { style: 'currency', currency: S().currency });
   let main = '', cents = '';
   let afterDecimal = false;
@@ -71,7 +76,18 @@ function byCategory(list) {
   }
   return [...map.values()].filter((c) => c.total > 0.004).sort((a, b) => b.total - a.total);
 }
-const cat = (id) => CATEGORY_BY_ID[id] || CATEGORY_BY_ID.other;
+/** All categories: built-ins, then yours, with Other last. */
+function allCats() {
+  const builtIns = CATEGORIES.filter((c) => c.id !== 'other');
+  return [...builtIns, ...store.state.categories.map((c) => ({ ...c, custom: true })), CATEGORY_BY_ID.other];
+}
+function cat(id) {
+  if (CATEGORY_BY_ID[id]) return CATEGORY_BY_ID[id];
+  const c = store.state.categories.find((x) => x.id === id);
+  return c ? { ...c, custom: true } : CATEGORY_BY_ID.other;
+}
+const catColor = (id) => `var(--c-${cat(id).color || 'gray'})`;
+const catTile = (id, size = 18) => `<span class="icon-tile cat-tile" style="--cat:${catColor(id)}">${icon(cat(id).icon, size)}</span>`;
 
 /* --------------------------------------------------------------------- state */
 
@@ -84,7 +100,7 @@ function niceMax(v) {
   if (v <= 0) return 1;
   const p = 10 ** Math.floor(Math.log10(v));
   const n = v / p;
-  return ([1, 2, 4, 5, 6, 8, 10].find((x) => n <= x) || 10) * p;
+  return ([1, 2, 2.5, 3, 4, 5, 6, 8, 10].find((x) => n <= x) || 10) * p;
 }
 function topRoundedBar(x, y, w, h, r) {
   if (h <= 0) return '';
@@ -99,10 +115,11 @@ function barChart(data, { height = 150, summary = '' } = {}) {
   const plotH = H - top - bottom;
   const step = plotW / data.length;
   const gap = Math.max(2, Math.min(10, step * 0.28));
-  const bw = Math.max(2, step - gap);
+  const bw = Math.min(24, Math.max(2, step - gap));
+  const inset = (step - gap - bw) / 2; // center capped bars in their slot
   let bars = '';
   data.forEach((d, i) => {
-    const x = left + i * step + gap / 2;
+    const x = left + i * step + gap / 2 + inset;
     const h = d.value > 0 ? Math.max(3, (d.value / max) * plotH) : 0;
     const y = top + plotH - h;
     bars += `<g><rect class="hit" x="${left + i * step}" y="${top}" width="${step}" height="${plotH + 4}" data-i="${i}"/>`;
@@ -112,7 +129,7 @@ function barChart(data, { height = 150, summary = '' } = {}) {
   });
   const grid = [0.5, 1].map((f) => {
     const y = top + plotH - f * plotH;
-    return `<line class="grid" x1="${left}" x2="${W - right + 4}" y1="${y}" y2="${y}"/><text class="axis" x="${W}" y="${y + 3}" text-anchor="end">${esc(money(max * f, { cents: false }))}</text>`;
+    return `<line class="grid" x1="${left}" x2="${W - right + 4}" y1="${y}" y2="${y}"/>${hidden() ? '' : `<text class="axis" x="${W}" y="${y + 3}" text-anchor="end">${esc(axisMoney(max * f))}</text>`}`;
   }).join('');
   const base = `<line class="grid" x1="${left}" x2="${W - right + 4}" y1="${top + plotH}" y2="${top + plotH}"/>`;
   const tips = esc(JSON.stringify(data.map((d) => [d.tip, d.sub || ''])));
@@ -120,7 +137,162 @@ function barChart(data, { height = 150, summary = '' } = {}) {
     <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet">${grid}${base}${bars}</svg>
     <div class="tip"></div></div>`;
 }
+function axisMoney(v) {
+  if (v >= 10000) {
+    try { return new Intl.NumberFormat(undefined, { style: 'currency', currency: S().currency, notation: 'compact', maximumFractionDigits: 1 }).format(v); } catch { /* fall through */ }
+  }
+  return money(v, { cents: false });
+}
+
+/* Doughnut: share of spending by category. Top slices keep their category
+   color; the long tail folds into one neutral "everything else" slice. */
+function donut(cats, total, { size = 150, maxSlices = 6, label = 'Spent' } = {}) {
+  let slices = cats.slice(0, maxSlices).map((c) => ({ id: c.id, name: cat(c.id).name, value: c.total, color: catColor(c.id) }));
+  const rest = cats.slice(maxSlices).reduce((a, c) => a + c.total, 0);
+  if (rest > 0) slices.push({ id: '_rest', name: `${cats.length - maxSlices} more`, value: rest, color: 'var(--c-gray)' });
+  const sumAll = slices.reduce((a, x) => a + x.value, 0) || 1;
+  const r = 50, w = 15, C = 2 * Math.PI * r;
+  const gapLen = slices.length > 1 ? 2.2 : 0; // surface-colored gap between slices
+  let offset = 0;
+  const arcs = slices.map((x, i) => {
+    const len = (x.value / sumAll) * C;
+    const dash = Math.max(0.01, len - gapLen);
+    const el = `<circle class="slice" data-i="${i}" cx="60" cy="60" r="${r}" fill="none" stroke="${x.color}" stroke-width="${w}"
+      stroke-dasharray="${dash} ${C - dash}" stroke-dashoffset="${-offset}" transform="rotate(-90 60 60)"/>`;
+    offset += len;
+    return el;
+  }).join('');
+  const tips = slices.map((x) => ({ name: x.name, amount: money(x.value), pct: `${Math.round((x.value / sumAll) * 100)}%` }));
+  return `<div class="donut" style="--size:${size}px" data-tips="${esc(JSON.stringify(tips))}" data-total="${esc(money(total))}" data-label="${esc(label)}" role="img" aria-label="${esc(`Spending by category: ${tips.map((t) => `${t.name} ${t.pct}`).join(', ')}`)}">
+    <svg viewBox="0 0 120 120"><circle cx="60" cy="60" r="${r}" fill="none" stroke="var(--surface-2)" stroke-width="${w}"/>${arcs}</svg>
+    <div class="donut-center"><small>${esc(label)}</small><b class="num">${esc(money(total, { cents: false }))}</b></div>
+  </div>`;
+}
+function donutLegend(cats, total, { maxSlices = 6 } = {}) {
+  const rows = cats.slice(0, maxSlices).map((c) => ({ id: c.id, name: cat(c.id).name, value: c.total, color: catColor(c.id) }));
+  const rest = cats.slice(maxSlices);
+  if (rest.length) rows.push({ id: '_rest', name: `${rest.length} more`, value: rest.reduce((a, c) => a + c.total, 0), color: 'var(--c-gray)' });
+  return `<ul class="legend">${rows.map((x, i) => `<li data-i="${i}" ${x.id !== '_rest' ? `data-action="filter-cat" data-cat="${x.id}"` : ''}>
+    <i style="background:${x.color}"></i><span class="n">${esc(x.name)}</span><span class="p num">${total > 0 ? Math.round((x.value / total) * 100) : 0}%</span></li>`).join('')}</ul>`;
+}
+
+/* Cumulative spending line for the month, against budget pace (or last month). */
+function paceChart(dailyCum, compare, { days, todayIdx, compareLabel }) {
+  const W = 340, H = 170, top = 14, bottom = 22, left = 0, right = 40;
+  const plotW = W - left - right, plotH = H - top - bottom;
+  const max = niceMax(Math.max(...dailyCum, ...(compare || [0]), 1));
+  const X = (i) => left + (days === 1 ? 0 : (i / (days - 1)) * plotW);
+  const Y = (v) => top + plotH - (v / max) * plotH;
+  const pts = dailyCum.slice(0, todayIdx + 1).map((v, i) => `${X(i).toFixed(1)},${Y(v).toFixed(1)}`);
+  const line = pts.length ? `M${pts.join('L')}` : '';
+  const area = pts.length ? `${line}L${X(pts.length - 1).toFixed(1)},${Y(0)}L${X(0)},${Y(0)}Z` : '';
+  const cmp = compare ? `M${compare.map((v, i) => `${X(i).toFixed(1)},${Y(v).toFixed(1)}`).join('L')}` : '';
+  const grid = [0, 0.5, 1].map((f) => {
+    const y = Y(max * f);
+    return `<line class="grid" x1="${left}" x2="${W - right + 4}" y1="${y}" y2="${y}"/>${hidden() || f === 0 ? '' : `<text class="axis" x="${W}" y="${y + 3}" text-anchor="end">${esc(axisMoney(max * f))}</text>`}`;
+  }).join('');
+  const ticks = [1, 8, 15, 22, days].filter((d, i, a) => a.indexOf(d) === i && d <= days)
+    .map((d) => `<text class="axis" x="${X(d - 1)}" y="${H - 6}" text-anchor="${d === 1 ? 'start' : d === days ? 'end' : 'middle'}">${d}</text>`).join('');
+  const last = todayIdx >= 0 ? `<circle class="end-dot" cx="${X(todayIdx)}" cy="${Y(dailyCum[todayIdx])}" r="4.5"/>` : '';
+  const tips = dailyCum.map((v, i) => [v, compare ? compare[i] : null]);
+  return `<div class="line-chart" data-days="${days}" data-today="${todayIdx}" data-tips="${esc(JSON.stringify(tips))}" data-cmp="${esc(compareLabel || '')}" data-l="${left}" data-w="${plotW}" data-vw="${W}" role="img" aria-label="Cumulative spending this month${compare ? ` compared with ${compareLabel}` : ''}">
+    <svg viewBox="0 0 ${W} ${H}">${grid}
+      ${cmp ? `<path class="cmp-line" d="${cmp}"/>` : ''}
+      ${area ? `<path class="area" d="${area}"/>` : ''}
+      ${line ? `<path class="main-line" d="${line}"/>` : ''}${last}
+      <line class="crosshair" x1="0" x2="0" y1="${top}" y2="${top + plotH}"/>
+      ${ticks}
+    </svg><div class="tip"></div></div>`;
+}
+
+/* Calendar heatmap: one cell per day, darker = more spent (single hue). */
+function heatmap(key, list) {
+  const [y, m] = key.split('-').map(Number);
+  const days = daysIn(key);
+  const firstDow = new Date(y, m - 1, 1).getDay();
+  const totals = Array.from({ length: days }, (_, i) => Math.max(0, sum(list.filter((t) => +t.date.slice(8) === i + 1))));
+  const max = Math.max(...totals, 0);
+  const today = todayISO();
+  const level = (v) => (v <= 0 || max <= 0 ? 0 : Math.min(4, Math.ceil((v / max) * 4)));
+  const dows = Array.from({ length: 7 }, (_, i) => new Date(2024, 0, 7 + i).toLocaleDateString(undefined, { weekday: 'narrow' }));
+  let cells = '';
+  for (let i = 0; i < firstDow; i += 1) cells += '<span class="hm-cell blank"></span>';
+  totals.forEach((v, i) => {
+    const iso = `${key}-${String(i + 1).padStart(2, '0')}`;
+    const future = iso > today;
+    cells += `<button class="hm-cell l${level(v)}${future ? ' future' : ''}${iso === today ? ' today' : ''}" data-tip="${esc(`${shortDate(iso)} · ${future ? 'upcoming' : money(v)}`)}" aria-label="${esc(`${shortDate(iso)}: ${money(v)}`)}"><span>${i + 1}</span></button>`;
+  });
+  return `<div class="heatmap"><div class="hm-grid">${dows.map((d) => `<span class="hm-dow">${esc(d)}</span>`).join('')}${cells}</div>
+    <div class="hm-foot"><span class="hm-tip faint">Tap a day</span><span class="hm-scale"><span class="faint">Less</span>${[0, 1, 2, 3, 4].map((l) => `<i class="hm-cell l${l}"></i>`).join('')}<span class="faint">More</span></span></div></div>`;
+}
+
 function wireCharts(root) {
+  // Doughnut: hovering or tapping a slice (or legend row) shows it in the center.
+  $$('.donut-wrap', root).forEach((wrap) => {
+    const d = $('.donut', wrap);
+    const tips = JSON.parse(d.dataset.tips || '[]');
+    const center = $('.donut-center', d);
+    const reset = () => {
+      center.innerHTML = `<small>${esc(d.dataset.label)}</small><b class="num">${esc(d.dataset.total)}</b>`;
+      $$('.slice', d).forEach((x) => x.classList.remove('dim', 'on'));
+      $$('.legend li', wrap).forEach((x) => x.classList.remove('on'));
+    };
+    const focus = (i) => {
+      const t = tips[i];
+      if (!t) return;
+      center.innerHTML = `<small>${esc(t.name)}</small><b class="num">${esc(t.amount)}</b><em>${esc(t.pct)}</em>`;
+      $$('.slice', d).forEach((x) => { x.classList.toggle('dim', +x.dataset.i !== i); x.classList.toggle('on', +x.dataset.i === i); });
+      $$('.legend li', wrap).forEach((x) => x.classList.toggle('on', +x.dataset.i === i));
+    };
+    d.addEventListener('pointerover', (e) => { const sl = e.target.closest('.slice'); if (sl) focus(+sl.dataset.i); });
+    d.addEventListener('pointerdown', (e) => { const sl = e.target.closest('.slice'); if (sl) focus(+sl.dataset.i); else reset(); });
+    d.addEventListener('pointerleave', (e) => { if (e.pointerType === 'mouse') reset(); });
+    $$('.legend li', wrap).forEach((li) => {
+      li.addEventListener('pointerenter', (e) => { if (e.pointerType === 'mouse') focus(+li.dataset.i); });
+      li.addEventListener('pointerleave', (e) => { if (e.pointerType === 'mouse') reset(); });
+    });
+  });
+
+  // Line chart crosshair + tooltip.
+  $$('.line-chart', root).forEach((ch) => {
+    const tips = JSON.parse(ch.dataset.tips || '[]');
+    const days = +ch.dataset.days, todayIdx = +ch.dataset.today;
+    const svg = $('svg', ch), tip = $('.tip', ch), xh = $('.crosshair', ch);
+    const l = +ch.dataset.l, w = +ch.dataset.w, vw = +ch.dataset.vw;
+    const cmpLabel = ch.dataset.cmp;
+    const move = (e) => {
+      const r = svg.getBoundingClientRect();
+      const vx = ((e.clientX - r.left) / r.width) * vw;
+      const i = Math.max(0, Math.min(days - 1, Math.round(((vx - l) / w) * (days - 1))));
+      const x = l + (days === 1 ? 0 : (i / (days - 1)) * w);
+      xh.setAttribute('x1', x); xh.setAttribute('x2', x); xh.classList.add('show');
+      const [v, c] = tips[i];
+      const mine = i <= todayIdx ? money(v) : '—';
+      tip.innerHTML = `Day ${i + 1}: ${esc(mine)}${c != null && cmpLabel ? `<small>${esc(cmpLabel)}: ${esc(money(c))}</small>` : ''}`;
+      const px = (x / vw) * r.width;
+      tip.style.left = `${Math.max(60, Math.min(r.width - 60, px))}px`;
+      tip.style.top = '6px';
+      tip.classList.add('show');
+    };
+    const hide = () => { tip.classList.remove('show'); xh.classList.remove('show'); };
+    svg.addEventListener('pointermove', move);
+    svg.addEventListener('pointerdown', move);
+    svg.addEventListener('pointerleave', (e) => { if (e.pointerType === 'mouse') hide(); });
+  });
+
+  // Heatmap: tapping a day shows its total under the grid.
+  $$('.heatmap', root).forEach((hm) => {
+    const out = $('.hm-tip', hm);
+    const show = (cell) => {
+      $$('.hm-cell.sel', hm).forEach((x) => x.classList.remove('sel'));
+      cell.classList.add('sel');
+      out.textContent = cell.dataset.tip;
+      out.classList.remove('faint');
+    };
+    hm.addEventListener('click', (e) => { const c = e.target.closest('button.hm-cell'); if (c) show(c); });
+    hm.addEventListener('pointerover', (e) => { const c = e.target.closest('button.hm-cell'); if (c && e.pointerType === 'mouse') show(c); });
+  });
+
   $$('.chart', root).forEach((chart) => {
     const tips = JSON.parse(chart.dataset.tips || '[]');
     const tip = $('.tip', chart);
@@ -157,7 +329,7 @@ function txRow(t) {
   if (t.card) bits.push(`•• ${t.card}`);
   else if (t.note) bits.push(t.note);
   return `<button class="tx" data-action="edit" data-id="${t.id}">
-    <span class="icon-tile">${icon(c.icon, 19)}</span>
+    ${catTile(t.category, 19)}
     <span class="who"><b>${esc(t.merchant)}</b><small>${esc(bits.join(' · '))}</small></span>
     <span class="amt num ${t.kind === 'refund' ? 'refund' : ''}">${t.kind === 'refund' ? '+' : ''}${esc(money(t.amount))}${t.time ? `<small>${esc(fmtTime(t.time))}</small>` : ''}</span>
   </button>`;
@@ -166,6 +338,12 @@ function fmtTime(hhmm) {
   const [h, m] = hhmm.split(':').map(Number);
   return new Date(2000, 0, 1, h, m).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
 }
+function eyeBtn() {
+  const h = hidden();
+  return `<button class="icon-btn eye-btn" data-action="toggle-hide" aria-pressed="${h}" aria-label="${h ? 'Show amounts' : 'Hide amounts'}" title="${h ? 'Show amounts' : 'Hide amounts'}">${icon(h ? 'eyeOff' : 'eye', 18)}</button>`;
+}
+const topActions = (withMonth = true) => `<div class="top-actions">${eyeBtn()}${withMonth ? monthSwitch() : ''}</div>`;
+
 function monthSwitch() {
   const isCurrent = ui.month >= monthOf(todayISO());
   return `<div class="month-switch">
@@ -181,8 +359,8 @@ function catRows(list, total, { clickable = false, limit = 99 } = {}) {
     const pct = total > 0 ? Math.round((c.total / total) * 100) : 0;
     const tag = clickable ? 'button' : 'div';
     return `<${tag} class="cat-row" ${clickable ? `data-action="filter-cat" data-cat="${c.id}"` : ''}>
-      <span class="icon-tile">${icon(k.icon, 18)}</span>
-      <span class="meta"><span class="name"><span>${esc(k.name)}</span><span>${pct}%</span></span><span class="meter"><i style="width:${(c.total / max) * 100}%"></i></span></span>
+      ${catTile(c.id, 18)}
+      <span class="meta"><span class="name"><span>${esc(k.name)}</span><span>${pct}%</span></span><span class="meter"><i style="width:${(c.total / max) * 100}%;background:${catColor(c.id)}"></i></span></span>
       <span class="amt num">${esc(money(c.total))}</span>
     </${tag}>`;
   }).join('');
@@ -259,10 +437,10 @@ function renderHome() {
   const recent = sortTx(list).slice(0, 6);
 
   view.innerHTML = `
-    <header class="topbar"><div><div class="eyebrow">${esc(greeting())}</div><h1>Overview</h1></div>${monthSwitch()}</header>
+    <header class="topbar"><div><div class="eyebrow">${esc(greeting())}</div><h1>Overview</h1></div>${topActions()}</header>
     <section class="hero">
       <div class="hero-label">Spent in ${esc(monthLabel(key))}${delta != null && Math.abs(delta) >= 1 ? `<span class="chip-delta">${delta > 0 ? '↑' : '↓'} ${Math.abs(Math.round(delta))}% vs last month</span>` : ''}</div>
-      <div class="hero-amount num">${esc(main)}<span class="cents">${esc(cents)}</span></div>
+      <button class="hero-amount num" data-action="toggle-hide" aria-label="${hidden() ? 'Show amounts' : 'Hide amounts'}">${esc(main)}<span class="cents">${esc(cents)}</span>${icon(hidden() ? 'eyeOff' : 'eye', 20, 'class="ico hero-eye"')}</button>
       ${budgetHtml}
     </section>
     <section class="stats">
@@ -273,14 +451,14 @@ function renderHome() {
            <div class="stat"><div class="k">vs prior</div><div class="v num">${delta == null ? '—' : `${delta > 0 ? '+' : ''}${Math.round(delta)}%`}</div></div>`}
       <div class="stat"><div class="k">Daily avg</div><div class="v num">${esc(money(avg, { cents: false }))}</div></div>
     </section>
+    ${cats.length ? `<section class="card">
+      <div class="card-head"><h2>Where it went</h2><button class="link" data-action="goto" data-tab="insights">Details</button></div>
+      <div class="donut-wrap">${donut(cats, spent, { size: 138, maxSlices: 5 })}${donutLegend(cats, spent, { maxSlices: 5 })}</div>
+    </section>` : ''}
     <section class="card">
       <div class="card-head"><h2>Daily spending</h2><span class="faint" style="font-size:12px">${esc(monthLabel(key, 'short'))}</span></div>
       ${barChart(dayData, { summary: `Daily spending for ${monthLabel(key)}` })}
     </section>
-    ${cats.length ? `<section class="card">
-      <div class="card-head"><h2>Where it went</h2><button class="link" data-action="goto" data-tab="insights">Details</button></div>
-      ${catRows(cats, spent, { clickable: true, limit: 5 })}
-    </section>` : ''}
     <section class="card">
       <div class="card-head"><h2>Recent</h2><button class="link" data-action="goto" data-tab="activity">See all</button></div>
       ${recent.length ? `<div class="tx-list">${recent.map(txRow).join('')}</div>` : `<p class="muted" style="margin:0">No expenses in ${esc(monthLabel(key))} yet.</p>`}
@@ -303,11 +481,11 @@ function renderActivity() {
     groups[groups.length - 1].items.push(t);
   }
   const chips = [`<button class="chip ${ui.filter === 'all' ? 'on' : ''}" data-action="filter" data-cat="all">All</button>`]
-    .concat(CATEGORIES.filter((c) => present.has(c.id) || ui.filter === c.id).map((c) => `<button class="chip ${ui.filter === c.id ? 'on' : ''}" data-action="filter" data-cat="${c.id}">${icon(c.icon, 15)}${esc(c.name)}</button>`))
+    .concat(allCats().filter((c) => present.has(c.id) || ui.filter === c.id).map((c) => `<button class="chip ${ui.filter === c.id ? 'on' : ''}" data-action="filter" data-cat="${c.id}"><i class="dot" style="background:${catColor(c.id)}"></i>${esc(c.name)}</button>`))
     .join('');
 
   view.innerHTML = `
-    <header class="topbar"><div><div class="eyebrow">${q ? 'Searching all months' : esc(monthLabel(ui.month))}</div><h1>Activity</h1></div>${q ? '' : monthSwitch()}</header>
+    <header class="topbar"><div><div class="eyebrow">${q ? 'Searching all months' : esc(monthLabel(ui.month))}</div><h1>Activity</h1></div>${topActions(!q)}</header>
     <label class="search">${icon('search', 18)}<input id="q" type="search" placeholder="Search merchant, category, amount" value="${esc(ui.query)}" autocomplete="off"><span class="sr-only">Search</span></label>
     <div class="chips">${chips}</div>
     ${sorted.length ? `<div class="summary-line"><span>${sorted.length} ${sorted.length === 1 ? 'transaction' : 'transactions'}</span><span class="num">${esc(money(sum(sorted)))}</span></div>` : ''}
@@ -351,17 +529,87 @@ function renderInsights() {
   const purchases = list.filter((t) => t.kind !== 'refund');
   const biggest = purchases.reduce((a, t) => (!a || t.amount > a.amount ? t : a), null);
   const isCurrent = key === monthOf(todayISO());
-  const dayCount = isCurrent ? new Date().getDate() : daysIn(key);
+  const nDays = daysIn(key);
+  const dayCount = isCurrent ? new Date().getDate() : nDays;
   const sixAvg = months.slice(0, 5).filter((m) => m.value > 0);
   const avgPrior = sixAvg.length ? sixAvg.reduce((a, m) => a + m.value, 0) / sixAvg.length : 0;
 
+  // Cumulative spend vs budget pace (or vs last month when there is no budget).
+  const cumulative = (k, n) => {
+    const out = [];
+    let run = 0;
+    for (let d = 1; d <= n; d += 1) {
+      run += sum(all.filter((t) => t.date === `${k}-${String(d).padStart(2, '0')}`));
+      out.push(Math.max(0, run));
+    }
+    return out;
+  };
+  const cum = cumulative(key, nDays);
+  const budget = Number(S().monthlyBudget) || 0;
+  let compare = null, compareLabel = '', paceNote = '';
+  if (budget > 0) {
+    compare = cum.map((_, i) => (budget * (i + 1)) / nDays);
+    compareLabel = 'Budget pace';
+    const diff = cum[dayCount - 1] - compare[dayCount - 1];
+    paceNote = diff <= 0 ? `<span class="pill good">${esc(money(-diff, { cents: false }))} under pace</span>` : `<span class="pill bad">${esc(money(diff, { cents: false }))} over pace</span>`;
+  } else {
+    const pk = shiftMonth(key, -1);
+    const prevCum = cumulative(pk, daysIn(pk));
+    if (prevCum[prevCum.length - 1] > 0) {
+      compare = cum.map((_, i) => prevCum[Math.min(i, prevCum.length - 1)]);
+      compareLabel = 'Last month';
+      const diff = cum[dayCount - 1] - compare[dayCount - 1];
+      paceNote = `<span class="pill ${diff <= 0 ? 'good' : 'bad'}">${esc(money(Math.abs(diff), { cents: false }))} ${diff <= 0 ? 'less' : 'more'} than last month</span>`;
+    }
+  }
+
+  // Spending by day of week.
+  const dowTotals = Array(7).fill(0);
+  const dowCount = Array(7).fill(0);
+  for (let d = 1; d <= dayCount; d += 1) dowCount[new Date(+key.slice(0, 4), +key.slice(5, 7) - 1, d).getDay()] += 1;
+  list.forEach((t) => { dowTotals[parseISO(t.date).getDay()] += net(t); });
+  const dowMax = Math.max(...dowTotals);
+  const dowData = dowTotals.map((v, i) => {
+    const name = new Date(2024, 0, 7 + i).toLocaleDateString(undefined, { weekday: 'long' });
+    const avg = dowCount[i] ? v / dowCount[i] : 0;
+    return { label: name.slice(0, 3), value: Math.max(0, v), tip: money(Math.max(0, v)), sub: `${name}s · avg ${money(Math.max(0, avg))}`, on: v > 0 && v === dowMax, tick: true };
+  });
+
+  // Spending by card.
+  const cards = new Map();
+  list.forEach((t) => {
+    const k = t.card ? `${t.issuer ? `${t.issuer} ` : ''}•• ${t.card}` : 'No card noted';
+    cards.set(k, (cards.get(k) || 0) + net(t));
+  });
+  const cardRows = [...cards.entries()].filter(([, v]) => v > 0).sort((a, b) => b[1] - a[1]);
+  const cardMax = cardRows[0]?.[1] || 1;
+
+  const empty = (msg) => `<p class="muted" style="margin:0">${msg}</p>`;
   view.innerHTML = `
-    <header class="topbar"><div><div class="eyebrow">${esc(monthLabel(key))}</div><h1>Insights</h1></div>${monthSwitch()}</header>
+    <header class="topbar"><div><div class="eyebrow">${esc(monthLabel(key))}</div><h1>Insights</h1></div>${topActions()}</header>
     <section class="kv">
       <div class="stat"><div class="k">Total spent</div><div class="v num">${esc(money(spent))}</div><small>${purchases.length} purchases</small></div>
       <div class="stat"><div class="k">Per day</div><div class="v num">${esc(money(spent / Math.max(1, dayCount)))}</div><small>over ${dayCount} days</small></div>
       <div class="stat"><div class="k">Biggest purchase</div><div class="v num">${biggest ? esc(money(biggest.amount)) : '—'}</div><small>${biggest ? esc(biggest.merchant) : 'None yet'}</small></div>
       <div class="stat"><div class="k">Typical month</div><div class="v num">${avgPrior ? esc(money(avgPrior, { cents: false })) : '—'}</div><small>${avgPrior ? 'average of prior months' : 'not enough history'}</small></div>
+    </section>
+    <section class="card">
+      <div class="card-head"><h2>Where it went</h2><span class="faint" style="font-size:12px">tap a slice</span></div>
+      ${cats.length ? `<div class="donut-wrap big">${donut(cats, spent, { size: 176, maxSlices: 6 })}${donutLegend(cats, spent, { maxSlices: 6 })}</div>
+        <div class="divider"></div>${catRows(cats, spent, { clickable: true })}` : empty('No spending this month.')}
+    </section>
+    <section class="card">
+      <div class="card-head"><h2>Spending pace</h2>${paceNote}</div>
+      ${paceChart(cum, compare, { days: nDays, todayIdx: dayCount - 1, compareLabel })}
+      <div class="keys"><span><i class="k-line"></i>This month</span>${compare ? `<span><i class="k-line cmp"></i>${esc(compareLabel)}</span>` : ''}</div>
+    </section>
+    <section class="card">
+      <div class="card-head"><h2>Daily calendar</h2><span class="faint" style="font-size:12px">darker means more spent</span></div>
+      ${heatmap(key, list)}
+    </section>
+    <section class="card">
+      <div class="card-head"><h2>By day of week</h2></div>
+      ${barChart(dowData, { height: 140, summary: 'Spending by day of week' })}
     </section>
     <section class="card">
       <div class="card-head"><h2>Last 6 months</h2></div>
@@ -370,13 +618,15 @@ function renderInsights() {
         <table class="data-table"><tbody>${months.map((m) => `<tr><td>${esc(m.sub)}</td><td class="num">${esc(money(m.value))}</td></tr>`).join('')}</tbody></table>
       </details>
     </section>
-    <section class="card">
-      <div class="card-head"><h2>By category</h2><span class="faint" style="font-size:12px">tap to see items</span></div>
-      ${cats.length ? catRows(cats, spent, { clickable: true }) : '<p class="muted" style="margin:0">No spending this month.</p>'}
-    </section>
+    ${cardRows.length ? `<section class="card">
+      <div class="card-head"><h2>By card</h2></div>
+      ${cardRows.map(([k, v]) => `<div class="cat-row"><span class="icon-tile">${icon('card', 18)}</span>
+        <span class="meta"><span class="name"><span>${esc(k)}</span><span>${spent > 0 ? Math.round((v / spent) * 100) : 0}%</span></span><span class="meter"><i style="width:${(v / cardMax) * 100}%"></i></span></span>
+        <span class="amt num">${esc(money(v))}</span></div>`).join('')}
+    </section>` : ''}
     <section class="card">
       <div class="card-head"><h2>Top merchants</h2></div>
-      ${topM.length ? topM.map((m, i) => `<div class="rank"><span class="n">${i + 1}</span><span class="m">${esc(m.name)}<small>${m.count}×</small></span><span class="num" style="font-weight:650">${esc(money(m.total))}</span></div>`).join('') : '<p class="muted" style="margin:0">No merchants yet.</p>'}
+      ${topM.length ? topM.map((m, i) => `<div class="rank"><span class="n">${i + 1}</span><span class="m">${esc(m.name)}<small>${m.count}×</small></span><span class="num" style="font-weight:650">${esc(money(m.total))}</span></div>`).join('') : empty('No merchants yet.')}
     </section>`;
   wireCharts(view);
 }
@@ -405,6 +655,7 @@ function renderSettings() {
     <div class="set-group">
       <div class="set-row"><span class="l"><span><b>Date order in alerts</b><small>How your bank writes 03/11</small></span></span>
         <div class="seg" style="min-width:170px"><button data-action="dayfirst" data-v="0" class="${!s.dayFirst ? 'on' : ''}">MM/DD</button><button data-action="dayfirst" data-v="1" class="${s.dayFirst ? 'on' : ''}">DD/MM</button></div></div>
+      <button class="set-row" data-action="categories"><span class="l"><span class="icon-tile accent">${icon('donut', 18)}</span><span><b>Categories</b><small>Add your own categories</small></span></span><span class="faint num">${allCats().length} ${icon('chevR', 16)}</span></button>
       <button class="set-row" data-action="rules"><span class="l"><span><b>Learned merchants</b><small>Penny remembers the category you pick for each merchant</small></span></span><span class="faint num">${rules.length} ${icon('chevR', 16)}</span></button>
     </div>
 
@@ -618,7 +869,7 @@ function openReview(found, texts = []) {
     toast(`Currency set to ${detected}`);
   }
 
-  const catOptions = (sel) => CATEGORIES.map((c) => `<option value="${c.id}" ${c.id === sel ? 'selected' : ''}>${esc(c.name)}</option>`).join('');
+  const catOptions = (sel) => allCats().map((c) => `<option value="${c.id}" ${c.id === sel ? 'selected' : ''}>${esc(c.name)}</option>`).join('');
   const badgeFor = (t) => {
     const b = [];
     if (t.dup) b.push(`<span class="badge warn">${icon('alert', 13)} Looks like a duplicate</span>`);
@@ -708,10 +959,10 @@ function openReview(found, texts = []) {
 
 /* ------------------------------------------------------------------ editor */
 
-function openEditor(tx) {
+function openEditor(tx, draft = null) {
   const isNew = !tx;
-  const d = tx ? { ...tx } : { amount: '', merchant: '', category: 'other', date: todayISO(), note: '', kind: 'expense' };
-  let touched = !isNew;
+  const d = { ...(tx || { amount: '', merchant: '', category: 'other', date: todayISO(), note: '', kind: 'expense' }), ...(draft || {}) };
+  let touched = !isNew || Boolean(draft && draft.touched);
   const sheet = openSheet({
     title: isNew ? 'New expense' : 'Edit expense',
     sub: tx && tx.source === 'scan' ? 'Added from a screenshot' : '',
@@ -720,7 +971,7 @@ function openEditor(tx) {
       <div class="amount-input"><span class="cur">${esc(currencySymbol())}</span><input id="ed-amount" class="num" type="number" inputmode="decimal" step="0.01" min="0" placeholder="0.00" value="${d.amount}"></div>
       <div class="form-grid">
         <label class="field"><span>Merchant</span><input class="input" id="ed-merchant" type="text" value="${esc(d.merchant)}" placeholder="e.g. Whole Foods" autocomplete="off"></label>
-        <div class="field"><span>Category</span><div class="cat-grid">${CATEGORIES.map((c) => `<button class="cat-pick ${c.id === d.category ? 'on' : ''}" data-cat="${c.id}">${icon(c.icon, 20)}${esc(c.name)}</button>`).join('')}</div></div>
+        <div class="field"><span>Category</span><div class="cat-grid">${allCats().map((c) => `<button class="cat-pick ${c.id === d.category ? 'on' : ''}" data-cat="${c.id}" style="--cat:${catColor(c.id)}">${icon(c.icon, 20)}${esc(c.name)}</button>`).join('')}<button class="cat-pick new" data-new-cat>${icon('plus', 20)}New</button></div></div>
         <div class="two">
           <label class="field"><span>Date</span><input class="input" id="ed-date" type="date" value="${d.date}" max="${todayISO()}"></label>
           <label class="field"><span>Card</span><input class="input" id="ed-card" type="text" inputmode="numeric" maxlength="4" value="${esc(d.card || '')}" placeholder="Last 4"></label>
@@ -736,16 +987,27 @@ function openEditor(tx) {
     d.kind = b.dataset.kind;
     $$('[data-kind]', el).forEach((x) => x.classList.toggle('on', x === b));
   }));
-  $$('.cat-pick', el).forEach((b) => b.addEventListener('click', () => {
+  $('[data-new-cat]', el).addEventListener('click', () => {
+    // Keep what was typed, create the category, then come back with it selected.
+    const keep = {
+      amount: $('#ed-amount', el).value, merchant: $('#ed-merchant', el).value, date: $('#ed-date', el).value,
+      card: $('#ed-card', el).value, note: $('#ed-note', el).value, kind: d.kind, category: d.category, touched,
+    };
+    openCategoryEditor(null, {
+      onSaved: (c) => openEditor(tx, { ...keep, category: c ? c.id : keep.category, touched: true }),
+      onCancel: () => openEditor(tx, keep),
+    });
+  });
+  $$('.cat-pick[data-cat]', el).forEach((b) => b.addEventListener('click', () => {
     d.category = b.dataset.cat;
     touched = true;
-    $$('.cat-pick', el).forEach((x) => x.classList.toggle('on', x === b));
+    $$('.cat-pick[data-cat]', el).forEach((x) => x.classList.toggle('on', x === b));
   }));
   $('#ed-merchant', el).addEventListener('input', (e) => {
     if (touched) return;
     const g = guessCategory(e.target.value, store.state.rules);
     d.category = g;
-    $$('.cat-pick', el).forEach((x) => x.classList.toggle('on', x.dataset.cat === g));
+    $$('.cat-pick[data-cat]', el).forEach((x) => x.classList.toggle('on', x.dataset.cat === g));
   });
   $('#ed-save', el).addEventListener('click', () => {
     const amount = Number($('#ed-amount', el).value);
@@ -772,6 +1034,91 @@ function openEditor(tx) {
     sheet.close();
     render();
     toast('Expense deleted', { label: 'Undo', run: () => { store.restore(copy); render(); } });
+  });
+}
+
+/* -------------------------------------------------------------- categories */
+
+function openCategories() {
+  const counts = {};
+  store.state.transactions.forEach((t) => { counts[t.category] = (counts[t.category] || 0) + 1; });
+  const sheet = openSheet({
+    title: 'Categories',
+    sub: 'Add your own, or tap one of yours to edit it',
+    body: `<button class="option" data-add-cat><span class="icon-tile accent">${icon('plus', 22)}</span><span><b>Add a category</b><small>Pick a name, icon and color</small></span>${icon('chevR', 18)}</button>
+      <div class="cat-list">${allCats().map((c) => `
+        <${c.custom ? 'button' : 'div'} class="cat-line" ${c.custom ? `data-edit-cat="${c.id}"` : ''}>
+          ${catTile(c.id, 18)}<span class="nm"><b>${esc(c.name)}</b><small>${c.custom ? 'Yours' : 'Built-in'} · ${counts[c.id] || 0} ${(counts[c.id] || 0) === 1 ? 'expense' : 'expenses'}</small></span>
+          ${c.custom ? icon('chevR', 16) : ''}
+        </${c.custom ? 'button' : 'div'}>`).join('')}</div>`,
+  });
+  sheet.body.addEventListener('click', (e) => {
+    if (e.target.closest('[data-add-cat]')) { openCategoryEditor(null, { onSaved: openCategories, onCancel: openCategories }); return; }
+    const b = e.target.closest('[data-edit-cat]');
+    if (b) openCategoryEditor(cat(b.dataset.editCat), { onSaved: openCategories, onCancel: openCategories });
+  });
+}
+
+function openCategoryEditor(existing, { onSaved, onCancel } = {}) {
+  const isNew = !existing;
+  // Default to the color used by the fewest categories so a new one stands out.
+  const used = {};
+  allCats().forEach((c) => { used[c.color] = (used[c.color] || 0) + 1; });
+  const freshColor = COLOR_SLOTS.filter((x) => x !== 'gray').sort((a, b) => (used[a] || 0) - (used[b] || 0))[0];
+  const d = { name: existing?.name || '', icon: existing?.icon || 'star', color: existing?.color || freshColor };
+  let done = false;
+  const sheet = openSheet({
+    title: isNew ? 'New category' : 'Edit category',
+    body: `
+      <div class="cat-preview" style="--cat:var(--c-${d.color})"><span class="icon-tile cat-tile big">${icon(d.icon, 30)}</span></div>
+      <div class="form-grid">
+        <label class="field"><span>Name</span><input class="input" id="cat-name" type="text" maxlength="24" value="${esc(d.name)}" placeholder="e.g. Kids, Pets, Gifts" autocomplete="off"></label>
+        <div class="field"><span>Color</span><div class="swatches">${COLOR_SLOTS.map((c) => `<button class="swatch ${c === d.color ? 'on' : ''}" data-color="${c}" style="background:var(--c-${c})" aria-label="${c}"></button>`).join('')}</div></div>
+        <div class="field"><span>Icon</span><div class="icon-grid">${ICON_CHOICES.map((ic) => `<button class="icon-pick ${ic === d.icon ? 'on' : ''}" data-icon="${ic}" aria-label="${ic}">${icon(ic, 20)}</button>`).join('')}</div></div>
+      </div>`,
+    foot: `${isNew ? '' : `<button class="btn danger" id="cat-del" style="flex:0 0 auto;width:52px;padding:0" aria-label="Delete category">${icon('trash', 19)}</button>`}<button class="btn primary" id="cat-save">${isNew ? 'Create category' : 'Save'}</button>`,
+    onClose: () => { if (!done && onCancel) setTimeout(onCancel, 0); },
+  });
+  const el = sheet.el;
+  const preview = $('.cat-preview', el);
+  if (isNew) setTimeout(() => $('#cat-name', el).focus(), 280);
+  el.addEventListener('click', (e) => {
+    const sw = e.target.closest('[data-color]');
+    if (sw) {
+      d.color = sw.dataset.color;
+      preview.style.setProperty('--cat', `var(--c-${d.color})`);
+      $$('[data-color]', el).forEach((x) => x.classList.toggle('on', x === sw));
+    }
+    const ic = e.target.closest('[data-icon]');
+    if (ic) {
+      d.icon = ic.dataset.icon;
+      $('.cat-tile', preview).innerHTML = icon(d.icon, 30);
+      $$('[data-icon]', el).forEach((x) => x.classList.toggle('on', x === ic));
+    }
+  });
+  $('#cat-save', el).addEventListener('click', () => {
+    const name = $('#cat-name', el).value.trim();
+    if (!name) { $('#cat-name', el).focus(); toast('Give it a name'); return; }
+    if (allCats().some((c) => c.name.toLowerCase() === name.toLowerCase() && c.id !== existing?.id)) { toast('That category already exists'); return; }
+    done = true;
+    let saved;
+    if (isNew) saved = store.addCategory({ name, icon: d.icon, color: d.color });
+    else { store.updateCategory(existing.id, { name, icon: d.icon, color: d.color }); saved = cat(existing.id); }
+    sheet.close();
+    toast(isNew ? `Added "${name}"` : 'Category saved');
+    render();
+    onSaved?.(saved);
+  });
+  $('#cat-del', el)?.addEventListener('click', () => {
+    const n = store.state.transactions.filter((t) => t.category === existing.id).length;
+    if (!window.confirm(`Delete "${existing.name}"?${n ? ` Its ${n} ${n === 1 ? 'expense moves' : 'expenses move'} to Other.` : ''}`)) return;
+    done = true;
+    store.deleteCategory(existing.id);
+    if (ui.filter === existing.id) ui.filter = 'all';
+    sheet.close();
+    toast('Category deleted');
+    render();
+    onSaved?.(null);
   });
 }
 
@@ -876,7 +1223,9 @@ const ACTIONS = {
     render();
   },
   rules: () => openRules(),
-  'export-csv': () => download(`penny-expenses-${todayISO()}.csv`, store.exportCSV(), 'text/csv'),
+  categories: () => openCategories(),
+  'toggle-hide': () => { store.setSettings({ hideAmounts: !hidden() }); render(); },
+  'export-csv': () => download(`penny-expenses-${todayISO()}.csv`, store.exportCSV((id) => cat(id).name), 'text/csv'),
   'export-json': () => download(`penny-backup-${todayISO()}.json`, store.exportJSON(), 'application/json'),
   import: () => {
     const inp = document.createElement('input');

@@ -28,7 +28,14 @@ stored in the browser's local storage.
   and drop, share a screenshot to the installed app on Android, or enter an
   expense manually.
 - **Budget at a glance**: month total, budget progress, safe-to-spend per day,
-  daily chart, category breakdown, top merchants and a 6-month trend.
+  and a doughnut chart of where the money went.
+- **Insights**: interactive doughnut by category, spending pace against your
+  budget (or last month), a daily calendar heatmap, spending by day of week,
+  a 6-month trend, spending per card and top merchants.
+- **Hide amounts**: tap the eye button (or the big total) to mask every amount
+  with dots, for checking the app in public. Tap again to reveal.
+- **Your own categories**: add categories with a name, icon and color in
+  Settings → Categories, or straight from the expense editor with **New**.
 - **Installable and offline**: add it to your home screen and it works offline.
 - **Your data, portable**: export CSV, back up and restore JSON.
 - Light and dark themes, USD / INR / EUR / GBP and more, MM/DD or DD/MM alerts.

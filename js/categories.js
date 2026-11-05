@@ -1,19 +1,28 @@
 // Category definitions, icons and merchant keyword rules.
 
+// Built-in categories. Each has a fixed color slot so a category keeps the
+// same color everywhere (donut, meters, chips), whatever the month.
 export const CATEGORIES = [
-  { id: 'groceries',     name: 'Groceries',        icon: 'basket' },
-  { id: 'dining',        name: 'Dining',           icon: 'cup' },
-  { id: 'transport',     name: 'Transport',        icon: 'car' },
-  { id: 'fuel',          name: 'Fuel',             icon: 'fuel' },
-  { id: 'shopping',      name: 'Shopping',         icon: 'bag' },
-  { id: 'bills',         name: 'Bills & Utilities', icon: 'bolt' },
-  { id: 'subscriptions', name: 'Subscriptions',    icon: 'repeat' },
-  { id: 'entertainment', name: 'Entertainment',    icon: 'ticket' },
-  { id: 'health',        name: 'Health',           icon: 'heart' },
-  { id: 'travel',        name: 'Travel',           icon: 'plane' },
-  { id: 'home',          name: 'Home',             icon: 'house' },
-  { id: 'other',         name: 'Other',            icon: 'dots' },
+  { id: 'groceries',     name: 'Groceries',         icon: 'basket', color: 'aqua' },
+  { id: 'dining',        name: 'Dining',            icon: 'cup',    color: 'orange' },
+  { id: 'transport',     name: 'Transport',         icon: 'car',    color: 'blue' },
+  { id: 'fuel',          name: 'Fuel',              icon: 'fuel',   color: 'yellow' },
+  { id: 'shopping',      name: 'Shopping',          icon: 'bag',    color: 'magenta' },
+  { id: 'bills',         name: 'Bills & Utilities', icon: 'bolt',   color: 'violet' },
+  { id: 'subscriptions', name: 'Subscriptions',     icon: 'repeat', color: 'red' },
+  { id: 'entertainment', name: 'Entertainment',     icon: 'ticket', color: 'green' },
+  { id: 'health',        name: 'Health',            icon: 'heart',  color: 'cyan' },
+  { id: 'travel',        name: 'Travel',            icon: 'plane',  color: 'brown' },
+  { id: 'home',          name: 'Home',              icon: 'house',  color: 'lime' },
+  { id: 'other',         name: 'Other',             icon: 'dots',   color: 'gray' },
 ];
+
+// Color slots (defined as --c-<slot> CSS variables for light and dark themes).
+export const COLOR_SLOTS = ['aqua', 'orange', 'blue', 'yellow', 'magenta', 'violet', 'red', 'green', 'cyan', 'brown', 'lime', 'gray'];
+
+// Icons offered when creating a custom category.
+export const ICON_CHOICES = ['basket', 'cup', 'car', 'fuel', 'bag', 'bolt', 'repeat', 'ticket', 'heart', 'plane', 'house', 'gift',
+  'book', 'grad', 'paw', 'baby', 'dumbbell', 'music', 'shirt', 'scissors', 'phone', 'wifi', 'cash', 'tools', 'star', 'globe', 'card', 'dots'];
 
 export const CATEGORY_BY_ID = Object.fromEntries(CATEGORIES.map((c) => [c.id, c]));
 
@@ -31,6 +40,24 @@ export const ICONS = {
   plane: '<path d="M10.5 13.5 4 11l1.5-1.5 7 .5 4-4a2 2 0 0 1 3 3l-4 4 .5 7L14.5 21 12 14.5l-3 3V20l-1.5 1L6 17.5 2.5 16l1-1.5h2.5l3-3"/>',
   house: '<path d="M4 11 12 4l8 7"/><path d="M6 9.5V20h12V9.5"/><path d="M10 20v-5h4v5"/>',
   dots: '<circle cx="6" cy="12" r="1.2"/><circle cx="12" cy="12" r="1.2"/><circle cx="18" cy="12" r="1.2"/>',
+  gift: '<rect x="4" y="9" width="16" height="11" rx="1.5"/><path d="M3 9h18M12 9v11"/><path d="M12 9S10.5 4 8 4.5 7.5 9 12 9ZM12 9s1.5-5 4-4.5S16.5 9 12 9Z"/>',
+  book: '<path d="M12 6.5C10 5 7 4.5 3.5 5v13c3.5-.5 6.5 0 8.5 1.5 2-1.5 5-2 8.5-1.5V5c-3.5-.5-6.5 0-8.5 1.5Z"/><path d="M12 6.5v13"/>',
+  grad: '<path d="M2.5 9 12 4.5 21.5 9 12 13.5 2.5 9Z"/><path d="M6.5 11v5c0 1.5 2.5 3 5.5 3s5.5-1.5 5.5-3v-5"/><path d="M21.5 9v5"/>',
+  paw: '<circle cx="6.5" cy="10" r="1.8"/><circle cx="10" cy="6.2" r="1.8"/><circle cx="14" cy="6.2" r="1.8"/><circle cx="17.5" cy="10" r="1.8"/><path d="M12 12c-3 0-5.5 3.5-5 5.5s3 1.5 5 1.5 4.5.5 5-1.5S15 12 12 12Z"/>',
+  baby: '<circle cx="12" cy="12" r="8"/><path d="M9.5 11v.01M14.5 11v.01"/><path d="M9.5 15a3.5 3.5 0 0 0 5 0"/><path d="M12 4c-1 1.5 0 3 1.5 2.5"/>',
+  dumbbell: '<path d="M6.5 6.5v11M17.5 6.5v11M3.5 9v6M20.5 9v6M6.5 12h11"/>',
+  music: '<path d="M9 18V5l11-2v13"/><circle cx="6.5" cy="18" r="2.5"/><circle cx="17.5" cy="16" r="2.5"/>',
+  shirt: '<path d="M8 4 3.5 6.5l2 4 2-1V20h9V9.5l2 1 2-4L16 4a4 4 0 0 1-8 0Z"/>',
+  scissors: '<circle cx="6" cy="6.5" r="2.5"/><circle cx="6" cy="17.5" r="2.5"/><path d="M8 8l12 10M8 16 20 6"/>',
+  phone: '<rect x="7" y="2.5" width="10" height="19" rx="2.5"/><path d="M11 18.5h2"/>',
+  wifi: '<path d="M2.5 9a14 14 0 0 1 19 0M5.5 12.5a9.5 9.5 0 0 1 13 0M8.5 16a5 5 0 0 1 7 0"/><path d="M12 19.2v.01"/>',
+  cash: '<rect x="2.5" y="6" width="19" height="12" rx="2"/><circle cx="12" cy="12" r="2.5"/><path d="M6 9.5v5M18 9.5v5"/>',
+  tools: '<path d="M15 3.5a5 5 0 0 0-4.6 6.9L3.5 17.3V20.5h3.2l6.9-6.9A5 5 0 0 0 20.5 9l-3 1-2.5-2.5 1-3a5 5 0 0 0-1-1Z"/>',
+  star: '<path d="m12 3.5 2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 16.9l-5.2 2.7 1-5.8-4.3-4.1 5.9-.9L12 3.5Z"/>',
+  globe: '<circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17M12 3.5c2.5 2.5 3.5 5.5 3.5 8.5s-1 6-3.5 8.5c-2.5-2.5-3.5-5.5-3.5-8.5s1-6 3.5-8.5Z"/>',
+  eye: '<path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Z"/><circle cx="12" cy="12" r="3"/>',
+  eyeOff: '<path d="M3.5 3.5l17 17"/><path d="M10.6 5.6c.5-.1.9-.1 1.4-.1 6 0 9.5 6.5 9.5 6.5a16.5 16.5 0 0 1-3 3.8M6.3 7.4A16.5 16.5 0 0 0 2.5 12S6 18.5 12 18.5c1.5 0 2.9-.4 4.2-1"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/>',
+  donut: '<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3.5"/><path d="M12 4v4.5M19.5 15l-4.2-1.5"/>',
   // UI icons
   home: '<path d="M4 11 12 4l8 7"/><path d="M6 9.5V20h12V9.5"/>',
   list: '<path d="M9 6h11M9 12h11M9 18h11"/><circle cx="4.5" cy="6" r="1"/><circle cx="4.5" cy="12" r="1"/><circle cx="4.5" cy="18" r="1"/>',

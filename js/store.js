@@ -22,7 +22,9 @@ const DEFAULTS = () => ({
     dayFirst: !/-US$/i.test(defaultLocale) && !/^en$/i.test(defaultLocale),
     theme: 'auto',
     name: '',
+    hideAmounts: false,
   },
+  categories: [], // your own categories: { id, name, icon, color }
   rules: {}, // merchantKey -> categoryId (learned from your edits)
 });
 
@@ -35,7 +37,7 @@ function load() {
     if (!raw) return DEFAULTS();
     const parsed = JSON.parse(raw);
     const base = DEFAULTS();
-    return { ...base, ...parsed, settings: { ...base.settings, ...(parsed.settings || {}) }, rules: parsed.rules || {} };
+    return { ...base, ...parsed, settings: { ...base.settings, ...(parsed.settings || {}) }, rules: parsed.rules || {}, categories: parsed.categories || [] };
   } catch {
     return DEFAULTS();
   }
@@ -102,6 +104,28 @@ export const store = {
     save();
   },
 
+  addCategory({ name, icon, color }) {
+    const c = { id: `c_${store.uid()}`, name: name.trim(), icon, color };
+    state.categories.push(c);
+    save();
+    return c;
+  },
+
+  updateCategory(id, patch) {
+    const c = state.categories.find((x) => x.id === id);
+    if (!c) return;
+    Object.assign(c, patch, { name: (patch.name ?? c.name).trim() });
+    save();
+  },
+
+  /** Remove a custom category; its expenses and learned merchants move to Other. */
+  deleteCategory(id) {
+    state.categories = state.categories.filter((x) => x.id !== id);
+    state.transactions.forEach((t) => { if (t.category === id) t.category = 'other'; });
+    for (const [k, v] of Object.entries(state.rules)) if (v === id) delete state.rules[k];
+    save();
+  },
+
   forgetRule(key) {
     delete state.rules[key];
     save();
@@ -117,14 +141,14 @@ export const store = {
     return JSON.stringify({ app: 'penny', exportedAt: new Date().toISOString(), ...state }, null, 2);
   },
 
-  exportCSV() {
+  exportCSV(categoryName = (id) => id) {
     const esc = (v) => {
       const s = v == null ? '' : String(v);
       return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
     };
     const rows = [['date', 'time', 'merchant', 'category', 'amount', 'type', 'card', 'issuer', 'note']];
     [...state.transactions].sort((a, b) => a.date.localeCompare(b.date)).forEach((t) => {
-      rows.push([t.date, t.time, t.merchant, t.category, (t.kind === 'refund' ? -t.amount : t.amount).toFixed(2), t.kind, t.card, t.issuer, t.note]);
+      rows.push([t.date, t.time, t.merchant, categoryName(t.category), (t.kind === 'refund' ? -t.amount : t.amount).toFixed(2), t.kind, t.card, t.issuer, t.note]);
     });
     return rows.map((r) => r.map(esc).join(',')).join('\n');
   },
@@ -140,6 +164,8 @@ export const store = {
       state.transactions.push({ ...t, id: t.id || store.uid() });
       added += 1;
     }
+    const known = new Set(state.categories.map((c) => c.id));
+    for (const c of data.categories || []) if (c && c.id && !known.has(c.id)) state.categories.push(c);
     state.rules = { ...(data.rules || {}), ...state.rules };
     if (data.settings) state.settings = { ...state.settings, ...data.settings };
     save();
@@ -147,9 +173,10 @@ export const store = {
   },
 
   clearAll() {
-    const settings = state.settings;
+    const { settings, categories } = state;
     state = DEFAULTS();
     state.settings = settings;
+    state.categories = categories;
     save();
   },
 };
