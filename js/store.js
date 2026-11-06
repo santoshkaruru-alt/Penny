@@ -23,6 +23,8 @@ const DEFAULTS = () => ({
     theme: 'auto',
     name: '',
     hideAmounts: false,
+    categoryBudgets: {}, // categoryId -> monthly limit
+    autoAdd: false, // add alerts from links without review when confident
   },
   categories: [], // your own categories: { id, name, icon, color }
   rules: {}, // merchantKey -> categoryId (learned from your edits)
@@ -58,11 +60,15 @@ export const store = {
 
   uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 8); },
 
+  /** Add expenses; returns the new ids (used for Undo). */
   addTransactions(list) {
     const now = Date.now();
+    const ids = [];
     for (const t of list) {
+      const id = store.uid();
+      ids.push(id);
       state.transactions.push({
-        id: store.uid(),
+        id,
         amount: Math.abs(Number(t.amount) || 0),
         merchant: (t.merchant || '').trim() || 'Unknown',
         category: t.category || 'other',
@@ -77,6 +83,13 @@ export const store = {
       });
       if (t.category && t.merchant && t.learn !== false) state.rules[merchantKey(t.merchant)] = t.category;
     }
+    save();
+    return ids;
+  },
+
+  deleteMany(ids) {
+    const drop = new Set(ids);
+    state.transactions = state.transactions.filter((x) => !drop.has(x.id));
     save();
   },
 
@@ -121,6 +134,7 @@ export const store = {
   /** Remove a custom category; its expenses and learned merchants move to Other. */
   deleteCategory(id) {
     state.categories = state.categories.filter((x) => x.id !== id);
+    if (state.settings.categoryBudgets) delete state.settings.categoryBudgets[id];
     state.transactions.forEach((t) => { if (t.category === id) t.category = 'other'; });
     for (const [k, v] of Object.entries(state.rules)) if (v === id) delete state.rules[k];
     save();

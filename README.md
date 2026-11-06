@@ -8,9 +8,9 @@ Everything runs **on your device**. Screenshots are read in the browser with a
 bundled OCR engine (Tesseract), and are never uploaded anywhere. Your data is
 stored in the browser's local storage.
 
-| Overview | Review a scan | Insights |
-|---|---|---|
-| ![Overview](docs/screen-home.png) | ![Review](docs/screen-review.png) | ![Insights](docs/screen-insights.png) |
+| Overview | Budgets | Review a scan | Insights |
+|---|---|---|---|
+| ![Overview](docs/screen-home.png) | ![Budgets](docs/screen-budgets.png) | ![Review](docs/screen-review.png) | ![Insights](docs/screen-insights.png) |
 
 ## Features
 
@@ -24,11 +24,19 @@ stored in the browser's local storage.
   same alert) is unticked automatically.
 - **Auto-categories that learn**: built-in rules for common US, UK and Indian
   merchants, and Penny remembers whatever category you choose for a merchant.
-- **Other ways in**: paste alert text, paste a screenshot (Ctrl/⌘ + V), drag
-  and drop, share a screenshot to the installed app on Android, or enter an
-  expense manually.
+- **Log straight from bank texts**: send the alert text to Penny with a link
+  (`your-penny-address/?text=...`) from an iPhone Shortcuts automation or an
+  Android automation app, share an SMS to Penny on Android, or copy the message
+  and tap **Paste bank text**. Turn on **Add without review** and confident
+  matches are logged instantly with an Undo. Set up in Settings → Log from
+  bank texts.
+- **Other ways in**: paste a screenshot (Ctrl/⌘ + V), drag and drop, share a
+  screenshot to the installed app on Android, or enter an expense manually.
 - **Budget at a glance**: month total, budget progress, safe-to-spend per day,
-  and a doughnut chart of where the money went.
+  a month-end forecast, and a doughnut chart of where the money went.
+- **Category budgets**: monthly limits per category with progress bars, a
+  marker for where you'd be at an even pace, and a warning when an expense
+  takes a category (or the month) past 80% or over its limit.
 - **Insights**: interactive doughnut by category, spending pace against your
   budget (or last month), a daily calendar heatmap, spending by day of week,
   a 6-month trend, spending per card and top merchants.
@@ -52,7 +60,7 @@ It is a static site with no build step and no dependencies.
 ```bash
 npm start          # or: python3 -m http.server 8080
 # open http://localhost:8080
-npm test           # parser tests (Node 18+)
+npm test           # parser and forecast tests (Node 18+)
 ```
 
 ### Put it on your phone (GitHub Pages)
@@ -76,11 +84,12 @@ css/styles.css      design tokens (light + dark), components
 js/app.js           views, sheets, scanning and review flow, charts
 js/parser.js        turns alert text into transactions (pure, unit-tested)
 js/categories.js    categories, icons, merchant keyword rules
+js/forecast.js      month-end forecast and budget thresholds (pure, unit-tested)
 js/store.js         local-first storage, export / import
 js/ocr.js           image prep (upscale, dark-mode invert, tone curve) + Tesseract
 sw.js               offline cache and Android share target
 vendor/tesseract/   bundled OCR engine and English model (Apache-2.0)
-tests/              parser tests
+tests/              parser and forecast tests
 ```
 
 ## Privacy notes

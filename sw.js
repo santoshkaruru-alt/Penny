@@ -1,5 +1,5 @@
 // Penny service worker: offline app shell, cached OCR engine, Android share target.
-const VERSION = 'penny-v2';
+const VERSION = 'penny-v3';
 const SHELL = [
   './',
   'index.html',
@@ -9,6 +9,7 @@ const SHELL = [
   'js/parser.js',
   'js/categories.js',
   'js/ocr.js',
+  'js/forecast.js',
   'manifest.webmanifest',
   'icons/icon.svg',
   'icons/icon-192.png',
@@ -45,6 +46,9 @@ self.addEventListener('fetch', (event) => {
         i += 1;
         await cache.put(new Request(`share/${Date.now()}-${i}-${encodeURIComponent(file.name || 'shot.png')}`), new Response(file, { headers: { 'content-type': file.type || 'image/png' } }));
       }
+      // Shared message text (e.g. long-press a bank SMS -> Share -> Penny).
+      const text = ['title', 'text', 'url'].map((k) => form.get(k)).filter((v) => typeof v === 'string' && v.trim()).join('\n');
+      if (!i && text) return Response.redirect(`./?text=${encodeURIComponent(text)}`, 303);
       return Response.redirect('./?shared=1', 303);
     })());
     return;

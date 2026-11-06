@@ -19,6 +19,11 @@
     "action": "./share-target",
     "method": "POST",
     "enctype": "multipart/form-data",
-    "params": { "files": [{ "name": "screenshots", "accept": ["image/*"] }] }
+    "params": {
+      "title": "title",
+      "text": "text",
+      "url": "url",
+      "files": [{ "name": "screenshots", "accept": ["image/*"] }]
+    }
   }
 }

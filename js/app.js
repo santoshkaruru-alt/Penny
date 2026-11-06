@@ -2,6 +2,7 @@ import { store } from './store.js';
 import { CATEGORIES, CATEGORY_BY_ID, COLOR_SLOTS, ICON_CHOICES, icon, guessCategory, merchantKey } from './categories.js';
 import { parseTransactions, toISODate } from './parser.js';
 import { readImage, warmUp } from './ocr.js';
+import { projectMonth, forecastReady, budgetStatus, crossedThresholds, typicalMonth } from './forecast.js';
 
 /* ------------------------------------------------------------------ helpers */
 
@@ -87,6 +88,65 @@ function cat(id) {
   return c ? { ...c, custom: true } : CATEGORY_BY_ID.other;
 }
 const catColor = (id) => `var(--c-${cat(id).color || 'gray'})`;
+/* Forecasts and budgets */
+function firstMonth() {
+  let m = null;
+  for (const t of store.state.transactions) { const k = monthOf(t.date); if (!m || k < m) m = k; }
+  return m;
+}
+/** Totals per month (every month from your first to `upTo`, zero-filled). */
+function totalsByMonth(filter, upTo) {
+  const out = {};
+  const first = firstMonth();
+  if (!first) return out;
+  for (let k = first; k <= upTo; k = shiftMonth(k, 1)) out[k] = 0;
+  for (const t of store.state.transactions) {
+    const k = monthOf(t.date);
+    if (k in out && (!filter || filter(t))) out[k] += net(t);
+  }
+  return out;
+}
+function forecastFor(key, catId = null) {
+  const isCurrent = key === monthOf(todayISO());
+  const nDays = daysIn(key);
+  const dayNum = isCurrent ? new Date().getDate() : nDays;
+  const filter = catId ? (t) => t.category === catId : null;
+  const totals = totalsByMonth(filter, key);
+  const spent = Math.max(0, totals[key] || 0);
+  const typical = typicalMonth(totals, key, firstMonth());
+  return { spent, typical, nDays, dayNum, isCurrent, projected: projectMonth({ spent, dayNum, nDays, typical }), ready: isCurrent && forecastReady({ dayNum, typical, spent }) };
+}
+const catLimits = () => {
+  const lim = S().categoryBudgets || {};
+  return Object.fromEntries(Object.entries(lim).filter(([id, v]) => v > 0 && (CATEGORY_BY_ID[id] || store.state.categories.some((c) => c.id === id))));
+};
+/** This month's spend per category (plus __total), to compare before/after adding. */
+function currentSpend() {
+  const key = monthOf(todayISO());
+  const out = { __total: 0 };
+  for (const t of store.state.transactions) {
+    if (monthOf(t.date) !== key) continue;
+    out[t.category] = (out[t.category] || 0) + net(t);
+    out.__total += net(t);
+  }
+  return out;
+}
+/** A warning when new expenses push a budget past 80% or 100%, else null. */
+function budgetAlert(before) {
+  const limits = { ...catLimits() };
+  if (S().monthlyBudget > 0) limits.__total = Number(S().monthlyBudget);
+  const hit = crossedThresholds(before, currentSpend(), limits)[0];
+  if (!hit) return null;
+  const name = hit.id === '__total' ? 'Your monthly budget' : cat(hit.id).name;
+  return hit.level === 'over'
+    ? `${name} is over budget: ${money(hit.spent, { cents: false })} of ${money(hit.limit, { cents: false })}`
+    : `${name} has used ${Math.round((hit.spent / hit.limit) * 100)}% of its budget`;
+}
+function addedToast(msg, before, action) {
+  const alert = budgetAlert(before);
+  toast(alert ? `${msg}. ${alert}` : msg, action, alert ? 'warn' : null);
+}
+
 const catTile = (id, size = 18) => `<span class="icon-tile cat-tile" style="--cat:${catColor(id)}">${icon(cat(id).icon, size)}</span>`;
 
 /* --------------------------------------------------------------------- state */
@@ -436,12 +496,22 @@ function renderHome() {
   const cats = byCategory(list);
   const recent = sortTx(list).slice(0, 6);
 
+  const fc = forecastFor(key);
+  let forecastHtml = '';
+  if (fc.ready) {
+    const end = parseISO(`${key}-${String(nDays).padStart(2, '0')}`).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+    const over = budget > 0 && fc.projected > budget * 1.02;
+    forecastHtml = `<div class="hero-forecast">${icon('chart', 14)}<span>On pace for <b class="num">${esc(money(fc.projected, { cents: false }))}</b> by ${esc(end)}${budget > 0 ? (over ? ` · <span class="hot">${icon('alert', 13)} ${esc(money(fc.projected - budget, { cents: false }))} over budget</span>` : ' · within budget') : ''}</span></div>`;
+  }
+  const budgetsHtml = categoryBudgetsCard(key, list);
+
   view.innerHTML = `
     <header class="topbar"><div><div class="eyebrow">${esc(greeting())}</div><h1>Overview</h1></div>${topActions()}</header>
     <section class="hero">
       <div class="hero-label">Spent in ${esc(monthLabel(key))}${delta != null && Math.abs(delta) >= 1 ? `<span class="chip-delta">${delta > 0 ? '↑' : '↓'} ${Math.abs(Math.round(delta))}% vs last month</span>` : ''}</div>
       <button class="hero-amount num" data-action="toggle-hide" aria-label="${hidden() ? 'Show amounts' : 'Hide amounts'}">${esc(main)}<span class="cents">${esc(cents)}</span>${icon(hidden() ? 'eyeOff' : 'eye', 20, 'class="ico hero-eye"')}</button>
       ${budgetHtml}
+      ${forecastHtml}
     </section>
     <section class="stats">
       ${isCurrent
@@ -451,6 +521,7 @@ function renderHome() {
            <div class="stat"><div class="k">vs prior</div><div class="v num">${delta == null ? '—' : `${delta > 0 ? '+' : ''}${Math.round(delta)}%`}</div></div>`}
       <div class="stat"><div class="k">Daily avg</div><div class="v num">${esc(money(avg, { cents: false }))}</div></div>
     </section>
+    ${budgetsHtml}
     ${cats.length ? `<section class="card">
       <div class="card-head"><h2>Where it went</h2><button class="link" data-action="goto" data-tab="insights">Details</button></div>
       <div class="donut-wrap">${donut(cats, spent, { size: 138, maxSlices: 5 })}${donutLegend(cats, spent, { maxSlices: 5 })}</div>
@@ -464,6 +535,48 @@ function renderHome() {
       ${recent.length ? `<div class="tx-list">${recent.map(txRow).join('')}</div>` : `<p class="muted" style="margin:0">No expenses in ${esc(monthLabel(key))} yet.</p>`}
     </section>`;
   wireCharts(view);
+}
+
+function categoryBudgetsCard(key, list) {
+  const limits = catLimits();
+  const ids = Object.keys(limits);
+  const isCurrent = key === monthOf(todayISO());
+  if (!ids.length) {
+    if (!isCurrent) return '';
+    return `<section class="card budget-cta"><span class="icon-tile accent">${icon('chart', 18)}</span>
+      <span><b>Set category budgets</b><small>Get a heads-up before Dining or Shopping runs over</small></span>
+      <button class="btn sm" data-action="budgets">Set up</button></section>`;
+  }
+  const nDays = daysIn(key);
+  const dayNum = isCurrent ? new Date().getDate() : nDays;
+  const expectedPct = Math.min(100, (dayNum / nDays) * 100);
+  const rows = ids.map((id) => {
+    const limit = limits[id];
+    const spent = Math.max(0, sum(list.filter((t) => t.category === id)));
+    const fc = forecastFor(key, id);
+    // A few purchases early on say little about a single category, so pace
+    // warnings start once the month is a third through.
+    const status = budgetStatus({ spent, limit, projected: fc.ready && dayNum >= 10 ? fc.projected : null });
+    return { id, limit, spent, fc, status, pct: spent / limit };
+  }).sort((a, b) => b.pct - a.pct); // closest to (or past) the limit first
+  const line = (r) => {
+    if (r.status === 'over') return `${icon('alert', 13)} ${esc(money(r.spent - r.limit, { cents: false }))} over`;
+    if (r.status === 'warn' && r.fc.ready && dayNum >= 10 && r.fc.projected > r.limit * 1.02) return `${icon('alert', 13)} On pace for ${esc(money(r.fc.projected, { cents: false }))}`;
+    if (r.status === 'warn') return `${icon('alert', 13)} ${esc(money(r.limit - r.spent, { cents: false }))} left`;
+    return `${esc(money(r.limit - r.spent, { cents: false }))} left`;
+  };
+  return `<section class="card">
+    <div class="card-head"><h2>Category budgets</h2><button class="link" data-action="budgets">Edit</button></div>
+    ${rows.map((r) => `<button class="bud-row s-${r.status}" data-action="filter-cat" data-cat="${r.id}">
+      ${catTile(r.id, 18)}
+      <span class="meta">
+        <span class="name"><span>${esc(cat(r.id).name)}</span><span class="num">${esc(money(r.spent, { cents: false }))} <span class="faint">/ ${esc(money(r.limit, { cents: false }))}</span></span></span>
+        <span class="meter bud"><i style="width:${Math.min(100, r.pct * 100)}%"></i>${isCurrent ? `<b class="pace" style="left:${expectedPct}%"></b>` : ''}</span>
+        <span class="bud-sub"><span class="st">${line(r)}</span><span class="faint num">${Math.round(r.pct * 100)}%</span></span>
+      </span>
+    </button>`).join('')}
+    ${isCurrent ? `<p class="bud-note faint"><b class="pace-key"></b> marks where you'd be if you spent evenly through the month</p>` : ''}
+  </section>`;
 }
 
 function renderActivity() {
@@ -592,6 +705,13 @@ function renderInsights() {
       <div class="stat"><div class="k">Per day</div><div class="v num">${esc(money(spent / Math.max(1, dayCount)))}</div><small>over ${dayCount} days</small></div>
       <div class="stat"><div class="k">Biggest purchase</div><div class="v num">${biggest ? esc(money(biggest.amount)) : '—'}</div><small>${biggest ? esc(biggest.merchant) : 'None yet'}</small></div>
       <div class="stat"><div class="k">Typical month</div><div class="v num">${avgPrior ? esc(money(avgPrior, { cents: false })) : '—'}</div><small>${avgPrior ? 'average of prior months' : 'not enough history'}</small></div>
+      ${(() => {
+        const f = forecastFor(key);
+        if (!f.isCurrent) return '';
+        const b = Number(S().monthlyBudget) || 0;
+        return `<div class="stat"><div class="k">Month-end forecast</div><div class="v num">${f.ready ? esc(money(f.projected, { cents: false })) : '—'}</div><small>${f.ready ? (b > 0 ? (f.projected > b * 1.02 ? `${esc(money(f.projected - b, { cents: false }))} over budget` : 'within budget') : 'at your current pace') : 'needs a few more days'}</small></div>
+          <div class="stat"><div class="k">${b > 0 ? 'Left to spend' : 'Purchases'}</div><div class="v num">${b > 0 ? esc(money(Math.max(0, b - spent), { cents: false })) : purchases.length}</div><small>${b > 0 ? `${esc(money(Math.max(0, b - spent) / Math.max(1, nDays - dayCount + 1), { cents: false }))} a day for ${nDays - dayCount + 1} days` : 'this month'}</small></div>`;
+      })()}
     </section>
     <section class="card">
       <div class="card-head"><h2>Where it went</h2><span class="faint" style="font-size:12px">tap a slice</span></div>
@@ -645,14 +765,16 @@ function renderSettings() {
     <div class="set-group">
       <label class="set-row"><span class="l"><span class="icon-tile accent">${icon('chart', 18)}</span><span><b>Monthly budget</b><small>Leave at 0 to hide</small></span></span>
         <input class="input num" id="set-budget" type="number" inputmode="decimal" min="0" step="10" value="${s.monthlyBudget || ''}" placeholder="0"></label>
+      <button class="set-row" data-action="budgets"><span class="l"><span class="icon-tile">${icon('donut', 18)}</span><span><b>Category budgets</b><small>Monthly limits with early warnings</small></span></span><span class="faint num">${Object.keys(catLimits()).length || ''} ${icon('chevR', 16)}</span></button>
       <label class="set-row"><span class="l"><span class="icon-tile">${icon('card', 18)}</span><span><b>Currency</b></span></span>
         <select class="select" id="set-currency">${currencies.map((c) => `<option ${c === s.currency ? 'selected' : ''}>${c}</option>`).join('')}</select></label>
       <label class="set-row"><span class="l"><span class="icon-tile">${icon('pen', 18)}</span><span><b>Your name</b><small>For the greeting</small></span></span>
         <input class="input" id="set-name" type="text" value="${esc(s.name)}" placeholder="Optional" autocomplete="given-name"></label>
     </div>
 
-    <div class="set-label">Reading screenshots</div>
+    <div class="set-label">Adding expenses</div>
     <div class="set-group">
+      <button class="set-row" data-action="auto-setup"><span class="l"><span class="icon-tile accent">${icon('bolt', 18)}</span><span><b>Log from bank texts</b><small>Send alerts to Penny without screenshots</small></span></span><span class="faint">${S().autoAdd ? 'Auto' : ''} ${icon('chevR', 16)}</span></button>
       <div class="set-row"><span class="l"><span><b>Date order in alerts</b><small>How your bank writes 03/11</small></span></span>
         <div class="seg" style="min-width:170px"><button data-action="dayfirst" data-v="0" class="${!s.dayFirst ? 'on' : ''}">MM/DD</button><button data-action="dayfirst" data-v="1" class="${s.dayFirst ? 'on' : ''}">DD/MM</button></div></div>
       <button class="set-row" data-action="categories"><span class="l"><span class="icon-tile accent">${icon('donut', 18)}</span><span><b>Categories</b><small>Add your own categories</small></span></span><span class="faint num">${allCats().length} ${icon('chevR', 16)}</span></button>
@@ -734,13 +856,14 @@ function openSheet({ title, sub = '', body = '', foot = '', onClose }) {
 }
 
 let toastTimer;
-function toast(msg, action) {
+function toast(msg, action, tone = null) {
   const el = $('#toast');
-  el.innerHTML = `<span>${esc(msg)}</span>${action ? `<button>${esc(action.label)}</button>` : ''}`;
+  el.classList.toggle('warn', tone === 'warn');
+  el.innerHTML = `${tone === 'warn' ? icon('alert', 18) : ''}<span>${esc(msg)}</span>${action ? `<button>${esc(action.label)}</button>` : ''}`;
   if (action) $('button', el).onclick = () => { action.run(); el.classList.remove('show'); };
   el.classList.add('show');
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => el.classList.remove('show'), action ? 5000 : 2600);
+  toastTimer = setTimeout(() => el.classList.remove('show'), action || tone ? 5500 : 2600);
 }
 
 /* --------------------------------------------------------------- add sheet */
@@ -752,7 +875,7 @@ function openAdd() {
     sub: 'Screenshots are read on this device',
     body: `
       <button class="option featured" data-action="scan"><span class="icon-tile">${icon('image', 22)}</span><span><b>Scan screenshots</b><small>Bank texts, card app or email alerts. Pick several at once.</small></span>${icon('chevR', 18)}</button>
-      <button class="option" data-action="paste"><span class="icon-tile">${icon('text', 22)}</span><span><b>Paste alert text</b><small>Copy the message and paste it in</small></span>${icon('chevR', 18)}</button>
+      <button class="option" data-action="paste"><span class="icon-tile">${icon('text', 22)}</span><span><b>Paste bank text</b><small>Copy the alert message, then tap here</small></span>${icon('chevR', 18)}</button>
       <button class="option" data-action="manual"><span class="icon-tile">${icon('pen', 22)}</span><span><b>Enter manually</b><small>Cash or anything without an alert</small></span>${icon('chevR', 18)}</button>
       <p class="hint">Tip: paste a screenshot with <kbd>Ctrl</kbd>/<kbd>⌘</kbd> + <kbd>V</kbd> or drop it anywhere. On Android, share a screenshot straight to Penny once it's installed.</p>`,
   });
@@ -947,11 +1070,12 @@ function openReview(found, texts = []) {
   btn.addEventListener('click', () => {
     const chosen = items.filter((t) => t.include && t.amount > 0 && t.date);
     if (!chosen.length) return;
+    const before = currentSpend();
     store.addTransactions(chosen.map((t) => ({ ...t, kind: t.kind === 'refund' ? 'refund' : 'expense', merchant: t.merchant || 'Unknown' })));
     sheet.close();
     const latest = chosen.map((t) => t.date).sort().pop();
     ui.month = monthOf(latest);
-    toast(`Added ${chosen.length} ${chosen.length === 1 ? 'expense' : 'expenses'}`);
+    addedToast(`Added ${chosen.length} ${chosen.length === 1 ? 'expense' : 'expenses'}`, before);
     render();
   });
   return sheet;
@@ -1021,11 +1145,12 @@ function openEditor(tx, draft = null) {
       note: $('#ed-note', el).value.trim(),
       kind: d.kind,
     };
+    const before = currentSpend();
     if (isNew) store.addTransactions([{ ...patch, source: 'manual' }]);
     else store.updateTransaction(tx.id, patch);
     sheet.close();
     ui.month = monthOf(patch.date);
-    toast(isNew ? 'Expense added' : 'Saved');
+    addedToast(isNew ? 'Expense added' : 'Saved', before);
     render();
   });
   $('#ed-del', el)?.addEventListener('click', () => {
@@ -1122,6 +1247,147 @@ function openCategoryEditor(existing, { onSaved, onCancel } = {}) {
   });
 }
 
+/* ---------------------------------------------------------------- budgets */
+
+function openBudgets() {
+  const limits = S().categoryBudgets || {};
+  const key = monthOf(todayISO());
+  const rows = allCats().map((c) => {
+    const f = forecastFor(key, c.id);
+    return { c, typical: f.typical, spent: f.spent, limit: limits[c.id] || '' };
+  });
+  const sheet = openSheet({
+    title: 'Budgets',
+    sub: 'Leave a category empty for no limit',
+    body: `
+      <label class="bud-total"><span><b>Whole month</b><small>Your overall monthly budget</small></span>
+        <span class="money-in"><i>${esc(currencySymbol())}</i><input class="input num" id="bud-total" type="number" inputmode="decimal" min="0" step="10" value="${S().monthlyBudget || ''}" placeholder="No limit"></span></label>
+      <div class="set-label" style="margin:18px 4px 8px">By category</div>
+      <div class="bud-edit">${rows.map((r) => `
+        <label class="bud-line">${catTile(r.c.id, 18)}
+          <span class="nm"><b>${esc(r.c.name)}</b><small>${r.typical > 0 ? `Typical ${esc(money(r.typical, { cents: false }))}` : 'No history yet'} · this month ${esc(money(r.spent, { cents: false }))}</small></span>
+          <span class="money-in"><i>${esc(currencySymbol())}</i><input class="input num" data-cat="${r.c.id}" type="number" inputmode="decimal" min="0" step="10" value="${r.limit}" placeholder="—"></span>
+        </label>`).join('')}</div>
+      <p class="hint" id="bud-sum"></p>`,
+    foot: `<button class="btn primary" id="bud-save">${icon('check', 18)} Save budgets</button>`,
+  });
+  const el = sheet.el;
+  const sumLine = () => {
+    const total = $$('[data-cat]', el).reduce((a, i) => a + (Number(i.value) || 0), 0);
+    const whole = Number($('#bud-total', el).value) || 0;
+    const out = $('#bud-sum', el);
+    if (!total) { out.textContent = 'Tip: start with the categories you most want to rein in.'; return; }
+    out.textContent = `Category limits add up to ${money(total, { cents: false, raw: true })}${whole ? ` of your ${money(whole, { cents: false, raw: true })} monthly budget` : ''}.`;
+    out.classList.toggle('warn-text', whole > 0 && total > whole);
+  };
+  el.addEventListener('input', sumLine);
+  sumLine();
+  $('#bud-save', el).addEventListener('click', () => {
+    const next = {};
+    $$('[data-cat]', el).forEach((i) => { const v = Number(i.value); if (v > 0) next[i.dataset.cat] = Math.round(v * 100) / 100; });
+    store.setSettings({ categoryBudgets: next, monthlyBudget: Math.max(0, Number($('#bud-total', el).value) || 0) });
+    sheet.close();
+    toast('Budgets saved');
+    render();
+  });
+}
+
+/* ------------------------------------------------------ logging from texts */
+
+/** Handle alert text that arrived from a link, a share or the clipboard. */
+function handleIncomingText(text, { source = 'link' } = {}) {
+  const clean = String(text || '').trim();
+  if (!clean) return;
+  const found = parseTransactions(clean, { ref: new Date(), dayFirst: S().dayFirst }).map((t) => ({ ...t, source }));
+  const sure = found.length > 0 && found.every((t) => (t.kind === 'expense' || t.kind === 'refund')
+    && t.merchant && t.confidence >= 0.6 && !store.findDuplicate(t)
+    && (!t.currency || t.currency === S().currency)); // other currencies need a look first
+  if (S().autoAdd && sure) {
+    activeSheet?.close(true);
+    const before = currentSpend();
+    const ids = store.addTransactions(found.map((t) => ({ ...t, category: guessCategory(t.merchant, store.state.rules), learn: false })));
+    ui.month = monthOf(found[found.length - 1].date);
+    ui.tab = 'home';
+    render();
+    const first = found[0];
+    const msg = found.length === 1 ? `Added ${money(first.amount)} at ${first.merchant}` : `Added ${found.length} expenses`;
+    addedToast(msg, before, { label: 'Undo', run: () => { store.deleteMany(ids); render(); } });
+    return;
+  }
+  openReview(found, [clean]);
+}
+
+async function pasteFromClipboard() {
+  let text = '';
+  try { text = await navigator.clipboard.readText(); } catch { /* permission denied or unsupported */ }
+  const found = text ? parseTransactions(text, { ref: new Date(), dayFirst: S().dayFirst }) : [];
+  if (found.length) { handleIncomingText(text, { source: 'text' }); return; }
+  openPaste();
+}
+
+function pennyLink() {
+  return `${location.origin}${location.pathname}?text=`;
+}
+
+function openAutoSetup() {
+  const link = pennyLink();
+  const sheet = openSheet({
+    title: 'Log from bank texts',
+    sub: 'Skip the screenshot: send the alert text straight to Penny',
+    body: `
+      <div class="set-group" style="margin-bottom:14px">
+        <button class="set-row" id="auto-toggle"><span class="l"><span><b>Add without review</b><small>When Penny is confident about the amount and merchant. You can undo.</small></span></span>
+          <span class="switch ${S().autoAdd ? 'on' : ''}" role="switch" aria-checked="${S().autoAdd}"><i></i></span></button>
+      </div>
+      <div class="field"><span>Your Penny link</span>
+        <div class="codebox"><code>${esc(link)}</code><button class="btn sm" id="copy-link">Copy</button></div>
+        <small class="faint" style="font-size:12px">Anything after <code>?text=</code> is read like a pasted bank alert.</small></div>
+
+      <div class="seg" style="margin:18px 0 6px"><button data-os="ios" class="on">iPhone</button><button data-os="android">Android</button></div>
+      <div data-steps="ios">
+        <ol class="steps">
+          <li>Open the <b>Shortcuts</b> app, go to <b>Automation</b>, tap <b>+</b> and choose <b>Message</b>.</li>
+          <li>Set <b>Sender</b> to your bank's alert sender (for example "Chase" or "HDFCBK"). Optionally add <b>Message contains</b> a word every alert has, such as "spent". Choose <b>Run Immediately</b>.</li>
+          <li>Add the action <b>URL Encode</b> and set its input to the <b>Shortcut Input</b> (the message).</li>
+          <li>Add <b>Text</b>: paste your Penny link, then insert the <b>URL Encoded Text</b> variable right after it.</li>
+          <li>Add <b>Open URLs</b> with that text. Done: each alert opens Penny and logs the purchase.</li>
+        </ol>
+        <div class="callout">${icon('alert', 16)}<div>On iPhone, a link opens in <b>Safari</b>, and Safari keeps its data separate from a Home Screen app. For this fully automatic route, use Penny from a Safari bookmark. If you prefer the Home Screen app, end the automation with <b>Copy to Clipboard</b> instead, then open Penny and tap <b>+ → Paste bank text</b>.</div></div>
+      </div>
+      <div data-steps="android" hidden>
+        <ol class="steps">
+          <li><b>One tap:</b> install Penny from Chrome (menu → Install app). Then long-press a bank SMS, tap <b>Share</b> and pick <b>Penny</b>.</li>
+          <li><b>Fully automatic:</b> in an automation app such as MacroDroid or Tasker, trigger on <b>SMS received</b> from your bank and add an <b>Open website / URL</b> action: your Penny link followed by the message text (URL-encoded).</li>
+          <li>Links to your Penny address open in the installed app, so the expense lands in the same place you use every day.</li>
+        </ol>
+      </div>
+
+      <div class="field" style="margin-top:16px"><span>Try it</span>
+        <textarea class="input" id="auto-test" style="min-height:90px" placeholder="Paste a bank alert to see what Penny would do"></textarea></div>
+      <button class="btn block" id="auto-try" style="margin-top:10px">${icon('sparkle', 18)} Test with this text</button>`,
+  });
+  const el = sheet.el;
+  $('#auto-toggle', el).addEventListener('click', () => {
+    store.setSettings({ autoAdd: !S().autoAdd });
+    const sw = $('.switch', el);
+    sw.classList.toggle('on', S().autoAdd);
+    sw.setAttribute('aria-checked', String(S().autoAdd));
+  });
+  $('#copy-link', el).addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText(link); toast('Link copied'); } catch { toast('Select the link and copy it'); }
+  });
+  $$('[data-os]', el).forEach((b) => b.addEventListener('click', () => {
+    $$('[data-os]', el).forEach((x) => x.classList.toggle('on', x === b));
+    $$('[data-steps]', el).forEach((x) => { x.hidden = x.dataset.steps !== b.dataset.os; });
+  }));
+  $('#auto-try', el).addEventListener('click', () => {
+    const t = $('#auto-test', el).value.trim();
+    if (!t) { $('#auto-test', el).focus(); return; }
+    sheet.close(true);
+    handleIncomingText(t, { source: 'text' });
+  });
+}
+
 function autosize(input) {
   const fit = () => { input.style.width = `${Math.max(3, (input.value || input.placeholder).length + 0.6)}ch`; };
   input.addEventListener('input', fit);
@@ -1208,7 +1474,9 @@ const ACTIONS = {
   month: (el) => { ui.month = shiftMonth(ui.month, +el.dataset.by); render(); },
   'open-add': () => openAdd(),
   scan: () => { activeSheet?.close(true); pickFiles(); },
-  paste: () => openPaste(),
+  paste: () => pasteFromClipboard(),
+  budgets: () => openBudgets(),
+  'auto-setup': () => openAutoSetup(),
   manual: () => openEditor(null),
   edit: (el) => { const t = store.state.transactions.find((x) => x.id === el.dataset.id); if (t) openEditor(t); },
   filter: (el) => { ui.filter = el.dataset.cat; render(); },
@@ -1313,8 +1581,18 @@ async function receiveShared() {
   if (files.length) scanFiles(files);
 }
 
+// Alert text sent by link: ?text=... (from a Shortcut, an automation app or a share).
+function receiveTextLink() {
+  const params = new URLSearchParams(location.search);
+  const text = params.get('text') || params.get('t');
+  if (!text) return;
+  history.replaceState(null, '', location.pathname); // so a reload doesn't add it twice
+  handleIncomingText(text, { source: 'link' });
+}
+
 render();
 receiveShared();
+receiveTextLink();
 if ('serviceWorker' in navigator && location.protocol !== 'file:') {
   window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
 }
