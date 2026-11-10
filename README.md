@@ -71,7 +71,7 @@ npm test           # parser, forecast and period tests (Node 18+)
 1. In the repository on GitHub, go to **Settings → Pages**.
 2. Under **Build and deployment**, choose **Deploy from a branch**, pick
    `main` and the `/ (root)` folder, then **Save**.
-3. After a minute or two, open **https://santoshkaruru-alt.github.io/penny/**
+3. After a minute or two, open **https://santoshkaruru-alt.github.io/Penny/**
    on your phone.
    - **iPhone**: Safari → Share → **Add to Home Screen**.
    - **Android**: Chrome → menu → **Install app**. You can then share a
