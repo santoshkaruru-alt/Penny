@@ -1,5 +1,5 @@
 // Penny service worker: offline app shell, cached OCR engine, Android share target.
-const VERSION = 'penny-v3';
+const VERSION = 'penny-v4';
 const SHELL = [
   './',
   'index.html',
@@ -10,6 +10,7 @@ const SHELL = [
   'js/categories.js',
   'js/ocr.js',
   'js/forecast.js',
+  'js/period.js',
   'manifest.webmanifest',
   'icons/icon.svg',
   'icons/icon-192.png',
