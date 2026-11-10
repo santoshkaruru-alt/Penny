@@ -607,3 +607,9 @@ button.cat-line:hover { background: var(--surface-2); border-radius: 12px; }
 /* Meters live inside inline <span>s; make them blocks so they get height. */
 .cat-row .meta, .bud-row .meta, .meter, .bud-sub, .cat-row .name, .bud-row .name { display: block; }
 .cat-row .name, .bud-row .name, .bud-sub { display: flex; }
+
+/* ---------- Billing-cycle months ---------- */
+.month-switch span.cycle { min-width: 0; font-size: 12.5px; white-space: nowrap; }
+.hm-cell span { display: flex; flex-direction: column; line-height: 1.1; }
+.hm-cell em { font-style: normal; font-size: 8.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .02em; opacity: .85; }
+@media (max-width: 380px) { .topbar h1 { font-size: 24px; } .month-switch span.cycle { font-size: 11.5px; padding: 0 2px; } }

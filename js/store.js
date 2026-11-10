@@ -23,6 +23,7 @@ const DEFAULTS = () => ({
     theme: 'auto',
     name: '',
     hideAmounts: false,
+    monthStartDay: 1, // budget month starts on this day (e.g. 10 for a statement cycle)
     categoryBudgets: {}, // categoryId -> monthly limit
     autoAdd: false, // add alerts from links without review when confident
   },

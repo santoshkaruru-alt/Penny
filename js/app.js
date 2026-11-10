@@ -3,6 +3,7 @@ import { CATEGORIES, CATEGORY_BY_ID, COLOR_SLOTS, ICON_CHOICES, icon, guessCateg
 import { parseTransactions, toISODate } from './parser.js';
 import { readImage, warmUp } from './ocr.js';
 import { projectMonth, forecastReady, budgetStatus, crossedThresholds, typicalMonth } from './forecast.js';
+import { periodOf, periodDates, periodLength, periodLabel, dayInPeriod, shiftKey, normalizeStartDay } from './period.js';
 
 /* ------------------------------------------------------------------ helpers */
 
@@ -12,12 +13,20 @@ const ESC = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ESC[c]);
 const S = () => store.state.settings;
 const todayISO = () => toISODate(new Date());
-const monthOf = (iso) => iso.slice(0, 7);
+// A "month" throughout the app is your budget month: the calendar month, or a
+// billing cycle starting on Settings → "Month starts on" (e.g. 10th to 9th).
+// It is keyed by the YYYY-MM it starts in. See js/period.js.
+const SD = () => normalizeStartDay(store.state.settings.monthStartDay);
+const isCycle = () => SD() !== 1;
+const monthOf = (iso) => periodOf(iso, SD());
 const net = (t) => (t.kind === 'refund' ? -t.amount : t.amount);
 const sum = (list) => list.reduce((a, t) => a + net(t), 0);
 const parseISO = (iso) => { const [y, m, d] = iso.split('-').map(Number); return new Date(y, m - 1, d); };
-const daysIn = (key) => { const [y, m] = key.split('-').map(Number); return new Date(y, m, 0).getDate(); };
-const shiftMonth = (key, by) => { const [y, m] = key.split('-').map(Number); const d = new Date(y, m - 1 + by, 1); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`; };
+const daysIn = (key) => periodLength(key, SD());
+const datesIn = (key) => periodDates(key, SD());
+const shiftMonth = shiftKey;
+/** Day number within the budget month: today's for the current one, else its length. */
+const dayNumFor = (key) => (key === monthOf(todayISO()) ? dayInPeriod(todayISO(), key, SD()) : daysIn(key));
 
 const fmtCache = new Map();
 const hidden = () => Boolean(S().hideAmounts);
@@ -53,7 +62,9 @@ function currencySymbol() {
     return p ? p.value : S().currency;
   } catch { return S().currency; }
 }
-const monthLabel = (key, style = 'long') => parseISO(`${key}-01`).toLocaleDateString(undefined, { month: style, year: key.slice(0, 4) === String(new Date().getFullYear()) ? undefined : 'numeric' });
+const monthLabel = (key, style = 'long') => periodLabel(key, SD(), style);
+/** "Spent in November" or, for a cycle, "Spent Nov 10 – Dec 9". */
+const spentLabel = (key) => (isCycle() ? `Spent ${monthLabel(key)}` : `Spent in ${monthLabel(key)}`);
 function dayLabel(iso) {
   const t = todayISO();
   const y = toISODate(new Date(Date.now() - 864e5));
@@ -109,7 +120,7 @@ function totalsByMonth(filter, upTo) {
 function forecastFor(key, catId = null) {
   const isCurrent = key === monthOf(todayISO());
   const nDays = daysIn(key);
-  const dayNum = isCurrent ? new Date().getDate() : nDays;
+  const dayNum = dayNumFor(key);
   const filter = catId ? (t) => t.category === catId : null;
   const totals = totalsByMonth(filter, key);
   const spent = Math.max(0, totals[key] || 0);
@@ -237,7 +248,7 @@ function donutLegend(cats, total, { maxSlices = 6 } = {}) {
 }
 
 /* Cumulative spending line for the month, against budget pace (or last month). */
-function paceChart(dailyCum, compare, { days, todayIdx, compareLabel }) {
+function paceChart(dailyCum, compare, { days, todayIdx, compareLabel, dates }) {
   const W = 340, H = 170, top = 14, bottom = 22, left = 0, right = 40;
   const plotW = W - left - right, plotH = H - top - bottom;
   const max = niceMax(Math.max(...dailyCum, ...(compare || [0]), 1));
@@ -251,10 +262,11 @@ function paceChart(dailyCum, compare, { days, todayIdx, compareLabel }) {
     const y = Y(max * f);
     return `<line class="grid" x1="${left}" x2="${W - right + 4}" y1="${y}" y2="${y}"/>${hidden() || f === 0 ? '' : `<text class="axis" x="${W}" y="${y + 3}" text-anchor="end">${esc(axisMoney(max * f))}</text>`}`;
   }).join('');
+  const dom = (i) => (dates ? +dates[i].slice(8) : i + 1); // day of the calendar month
   const ticks = [1, 8, 15, 22, days].filter((d, i, a) => a.indexOf(d) === i && d <= days)
-    .map((d) => `<text class="axis" x="${X(d - 1)}" y="${H - 6}" text-anchor="${d === 1 ? 'start' : d === days ? 'end' : 'middle'}">${d}</text>`).join('');
+    .map((d) => `<text class="axis" x="${X(d - 1)}" y="${H - 6}" text-anchor="${d === 1 ? 'start' : d === days ? 'end' : 'middle'}">${dom(d - 1)}</text>`).join('');
   const last = todayIdx >= 0 ? `<circle class="end-dot" cx="${X(todayIdx)}" cy="${Y(dailyCum[todayIdx])}" r="4.5"/>` : '';
-  const tips = dailyCum.map((v, i) => [v, compare ? compare[i] : null]);
+  const tips = dailyCum.map((v, i) => [v, compare ? compare[i] : null, dates ? shortDate(dates[i]) : `Day ${i + 1}`]);
   return `<div class="line-chart" data-days="${days}" data-today="${todayIdx}" data-tips="${esc(JSON.stringify(tips))}" data-cmp="${esc(compareLabel || '')}" data-l="${left}" data-w="${plotW}" data-vw="${W}" role="img" aria-label="Cumulative spending this month${compare ? ` compared with ${compareLabel}` : ''}">
     <svg viewBox="0 0 ${W} ${H}">${grid}
       ${cmp ? `<path class="cmp-line" d="${cmp}"/>` : ''}
@@ -267,10 +279,9 @@ function paceChart(dailyCum, compare, { days, todayIdx, compareLabel }) {
 
 /* Calendar heatmap: one cell per day, darker = more spent (single hue). */
 function heatmap(key, list) {
-  const [y, m] = key.split('-').map(Number);
-  const days = daysIn(key);
-  const firstDow = new Date(y, m - 1, 1).getDay();
-  const totals = Array.from({ length: days }, (_, i) => Math.max(0, sum(list.filter((t) => +t.date.slice(8) === i + 1))));
+  const dates = datesIn(key);
+  const firstDow = parseISO(dates[0]).getDay();
+  const totals = dates.map((iso) => Math.max(0, sum(list.filter((t) => t.date === iso))));
   const max = Math.max(...totals, 0);
   const today = todayISO();
   const level = (v) => (v <= 0 || max <= 0 ? 0 : Math.min(4, Math.ceil((v / max) * 4)));
@@ -278,9 +289,12 @@ function heatmap(key, list) {
   let cells = '';
   for (let i = 0; i < firstDow; i += 1) cells += '<span class="hm-cell blank"></span>';
   totals.forEach((v, i) => {
-    const iso = `${key}-${String(i + 1).padStart(2, '0')}`;
+    const iso = dates[i];
     const future = iso > today;
-    cells += `<button class="hm-cell l${level(v)}${future ? ' future' : ''}${iso === today ? ' today' : ''}" data-tip="${esc(`${shortDate(iso)} · ${future ? 'upcoming' : money(v)}`)}" aria-label="${esc(`${shortDate(iso)}: ${money(v)}`)}"><span>${i + 1}</span></button>`;
+    const day = +iso.slice(8);
+    // In a cycle that spans two months, tag the first cell and the 1st with the month.
+    const tag = isCycle() && (i === 0 || day === 1) ? `<em>${esc(parseISO(iso).toLocaleDateString(undefined, { month: 'short' }))}</em>` : '';
+    cells += `<button class="hm-cell l${level(v)}${future ? ' future' : ''}${iso === today ? ' today' : ''}" data-tip="${esc(`${shortDate(iso)} · ${future ? 'upcoming' : money(v)}`)}" aria-label="${esc(`${shortDate(iso)}: ${money(v)}`)}"><span>${day}${tag}</span></button>`;
   });
   return `<div class="heatmap"><div class="hm-grid">${dows.map((d) => `<span class="hm-dow">${esc(d)}</span>`).join('')}${cells}</div>
     <div class="hm-foot"><span class="hm-tip faint">Tap a day</span><span class="hm-scale"><span class="faint">Less</span>${[0, 1, 2, 3, 4].map((l) => `<i class="hm-cell l${l}"></i>`).join('')}<span class="faint">More</span></span></div></div>`;
@@ -326,9 +340,9 @@ function wireCharts(root) {
       const i = Math.max(0, Math.min(days - 1, Math.round(((vx - l) / w) * (days - 1))));
       const x = l + (days === 1 ? 0 : (i / (days - 1)) * w);
       xh.setAttribute('x1', x); xh.setAttribute('x2', x); xh.classList.add('show');
-      const [v, c] = tips[i];
+      const [v, c, when] = tips[i];
       const mine = i <= todayIdx ? money(v) : '—';
-      tip.innerHTML = `Day ${i + 1}: ${esc(mine)}${c != null && cmpLabel ? `<small>${esc(cmpLabel)}: ${esc(money(c))}</small>` : ''}`;
+      tip.innerHTML = `${esc(when)}: ${esc(mine)}${c != null && cmpLabel ? `<small>${esc(cmpLabel)}: ${esc(money(c))}</small>` : ''}`;
       const px = (x / vw) * r.width;
       tip.style.left = `${Math.max(60, Math.min(r.width - 60, px))}px`;
       tip.style.top = '6px';
@@ -408,7 +422,7 @@ function monthSwitch() {
   const isCurrent = ui.month >= monthOf(todayISO());
   return `<div class="month-switch">
     <button data-action="month" data-by="-1" aria-label="Previous month">${icon('chevL', 16)}</button>
-    <span>${esc(monthLabel(ui.month, 'short'))}</span>
+    <span class="${isCycle() ? 'cycle' : ''}">${esc(monthLabel(ui.month, isCycle() ? 'long' : 'short'))}</span>
     <button data-action="month" data-by="1" aria-label="Next month" ${isCurrent ? 'disabled' : ''}>${icon('chevR', 16)}</button>
   </div>`;
 }
@@ -427,6 +441,11 @@ function catRows(list, total, { clickable = false, limit = 99 } = {}) {
 }
 
 /* -------------------------------------------------------------------- views */
+
+function ordinal(n) {
+  const s = n % 100 >= 11 && n % 100 <= 13 ? 'th' : ({ 1: 'st', 2: 'nd', 3: 'rd' }[n % 10] || 'th');
+  return `${n}${s}`;
+}
 
 function greeting() {
   const h = new Date().getHours();
@@ -457,10 +476,11 @@ function renderHome() {
   const spent = sum(list);
   const prev = sum(all.filter((t) => monthOf(t.date) === shiftMonth(key, -1)));
   const nDays = daysIn(key);
-  const dayNum = isCurrent ? new Date().getDate() : nDays;
+  const dayNum = dayNumFor(key);
   // Compare to the same point last month, so early-month numbers aren't misleading.
+  const prevKey = shiftMonth(key, -1);
   const prevSamePoint = isCurrent
-    ? sum(all.filter((t) => monthOf(t.date) === shiftMonth(key, -1) && +t.date.slice(8) <= dayNum))
+    ? sum(all.filter((t) => monthOf(t.date) === prevKey && dayInPeriod(t.date, prevKey, SD()) <= dayNum))
     : prev;
   const delta = prevSamePoint > 0 ? ((spent - prevSamePoint) / prevSamePoint) * 100 : null;
   const budget = Number(S().monthlyBudget) || 0;
@@ -485,21 +505,22 @@ function renderHome() {
     budgetHtml = `<button class="hero-cta" data-action="set-budget">${icon('plus', 15)} Set a monthly budget</button>`;
   }
 
-  const dayData = [];
-  for (let d = 1; d <= nDays; d += 1) {
-    const iso = `${key}-${String(d).padStart(2, '0')}`;
+  const dayData = datesIn(key).map((iso, i) => {
     const items = list.filter((t) => t.date === iso);
     const v = Math.max(0, sum(items));
-    const future = isCurrent && d > dayNum;
-    dayData.push({ label: String(d), value: v, future, tip: future ? 'Upcoming' : money(v), sub: `${shortDate(iso)}${future ? '' : ` · ${items.length} ${items.length === 1 ? 'purchase' : 'purchases'}`}`, on: !isCurrent || iso === todayISO(), tick: d === 1 || d % 5 === 0 });
-  }
+    const future = isCurrent && i + 1 > dayNum;
+    const dom = +iso.slice(8);
+    // Calendar months tick on 1, 5, 10...; cycles every 5th day from the start.
+    const tick = isCycle() ? i % 5 === 0 : dom === 1 || dom % 5 === 0;
+    return { label: String(dom), value: v, future, tip: future ? 'Upcoming' : money(v), sub: `${shortDate(iso)}${future ? '' : ` · ${items.length} ${items.length === 1 ? 'purchase' : 'purchases'}`}`, on: !isCurrent || iso === todayISO(), tick };
+  });
   const cats = byCategory(list);
   const recent = sortTx(list).slice(0, 6);
 
   const fc = forecastFor(key);
   let forecastHtml = '';
   if (fc.ready) {
-    const end = parseISO(`${key}-${String(nDays).padStart(2, '0')}`).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+    const end = shortDate(datesIn(key)[nDays - 1]);
     const over = budget > 0 && fc.projected > budget * 1.02;
     forecastHtml = `<div class="hero-forecast">${icon('chart', 14)}<span>On pace for <b class="num">${esc(money(fc.projected, { cents: false }))}</b> by ${esc(end)}${budget > 0 ? (over ? ` · <span class="hot">${icon('alert', 13)} ${esc(money(fc.projected - budget, { cents: false }))} over budget</span>` : ' · within budget') : ''}</span></div>`;
   }
@@ -508,7 +529,7 @@ function renderHome() {
   view.innerHTML = `
     <header class="topbar"><div><div class="eyebrow">${esc(greeting())}</div><h1>Overview</h1></div>${topActions()}</header>
     <section class="hero">
-      <div class="hero-label">Spent in ${esc(monthLabel(key))}${delta != null && Math.abs(delta) >= 1 ? `<span class="chip-delta">${delta > 0 ? '↑' : '↓'} ${Math.abs(Math.round(delta))}% vs last month</span>` : ''}</div>
+      <div class="hero-label">${esc(spentLabel(key))}${delta != null && Math.abs(delta) >= 1 ? `<span class="chip-delta">${delta > 0 ? '↑' : '↓'} ${Math.abs(Math.round(delta))}% vs last month</span>` : ''}</div>
       <button class="hero-amount num" data-action="toggle-hide" aria-label="${hidden() ? 'Show amounts' : 'Hide amounts'}">${esc(main)}<span class="cents">${esc(cents)}</span>${icon(hidden() ? 'eyeOff' : 'eye', 20, 'class="ico hero-eye"')}</button>
       ${budgetHtml}
       ${forecastHtml}
@@ -527,7 +548,7 @@ function renderHome() {
       <div class="donut-wrap">${donut(cats, spent, { size: 138, maxSlices: 5 })}${donutLegend(cats, spent, { maxSlices: 5 })}</div>
     </section>` : ''}
     <section class="card">
-      <div class="card-head"><h2>Daily spending</h2><span class="faint" style="font-size:12px">${esc(monthLabel(key, 'short'))}</span></div>
+      <div class="card-head"><h2>Daily spending</h2><span class="faint" style="font-size:12px">${esc(monthLabel(key, isCycle() ? 'long' : 'short'))}</span></div>
       ${barChart(dayData, { summary: `Daily spending for ${monthLabel(key)}` })}
     </section>
     <section class="card">
@@ -548,7 +569,7 @@ function categoryBudgetsCard(key, list) {
       <button class="btn sm" data-action="budgets">Set up</button></section>`;
   }
   const nDays = daysIn(key);
-  const dayNum = isCurrent ? new Date().getDate() : nDays;
+  const dayNum = dayNumFor(key);
   const expectedPct = Math.min(100, (dayNum / nDays) * 100);
   const rows = ids.map((id) => {
     const limit = limits[id];
@@ -627,7 +648,7 @@ function renderInsights() {
   for (let i = 5; i >= 0; i -= 1) {
     const k = shiftMonth(key, -i);
     const v = Math.max(0, sum(all.filter((t) => monthOf(t.date) === k)));
-    months.push({ key: k, label: parseISO(`${k}-01`).toLocaleDateString(undefined, { month: 'short' }), value: v, tip: money(v), sub: monthLabel(k), on: k === key, tick: true });
+    months.push({ key: k, label: monthLabel(k, 'short'), value: v, tip: money(v), sub: monthLabel(k), on: k === key, tick: true });
   }
   const cats = byCategory(list);
   const merchants = new Map();
@@ -643,21 +664,21 @@ function renderInsights() {
   const biggest = purchases.reduce((a, t) => (!a || t.amount > a.amount ? t : a), null);
   const isCurrent = key === monthOf(todayISO());
   const nDays = daysIn(key);
-  const dayCount = isCurrent ? new Date().getDate() : nDays;
+  const dayCount = dayNumFor(key);
   const sixAvg = months.slice(0, 5).filter((m) => m.value > 0);
   const avgPrior = sixAvg.length ? sixAvg.reduce((a, m) => a + m.value, 0) / sixAvg.length : 0;
 
   // Cumulative spend vs budget pace (or vs last month when there is no budget).
-  const cumulative = (k, n) => {
+  const cumulative = (k) => {
     const out = [];
     let run = 0;
-    for (let d = 1; d <= n; d += 1) {
-      run += sum(all.filter((t) => t.date === `${k}-${String(d).padStart(2, '0')}`));
+    for (const iso of datesIn(k)) {
+      run += sum(all.filter((t) => t.date === iso));
       out.push(Math.max(0, run));
     }
     return out;
   };
-  const cum = cumulative(key, nDays);
+  const cum = cumulative(key);
   const budget = Number(S().monthlyBudget) || 0;
   let compare = null, compareLabel = '', paceNote = '';
   if (budget > 0) {
@@ -667,7 +688,7 @@ function renderInsights() {
     paceNote = diff <= 0 ? `<span class="pill good">${esc(money(-diff, { cents: false }))} under pace</span>` : `<span class="pill bad">${esc(money(diff, { cents: false }))} over pace</span>`;
   } else {
     const pk = shiftMonth(key, -1);
-    const prevCum = cumulative(pk, daysIn(pk));
+    const prevCum = cumulative(pk);
     if (prevCum[prevCum.length - 1] > 0) {
       compare = cum.map((_, i) => prevCum[Math.min(i, prevCum.length - 1)]);
       compareLabel = 'Last month';
@@ -679,7 +700,7 @@ function renderInsights() {
   // Spending by day of week.
   const dowTotals = Array(7).fill(0);
   const dowCount = Array(7).fill(0);
-  for (let d = 1; d <= dayCount; d += 1) dowCount[new Date(+key.slice(0, 4), +key.slice(5, 7) - 1, d).getDay()] += 1;
+  datesIn(key).slice(0, dayCount).forEach((iso) => { dowCount[parseISO(iso).getDay()] += 1; });
   list.forEach((t) => { dowTotals[parseISO(t.date).getDay()] += net(t); });
   const dowMax = Math.max(...dowTotals);
   const dowData = dowTotals.map((v, i) => {
@@ -720,7 +741,7 @@ function renderInsights() {
     </section>
     <section class="card">
       <div class="card-head"><h2>Spending pace</h2>${paceNote}</div>
-      ${paceChart(cum, compare, { days: nDays, todayIdx: dayCount - 1, compareLabel })}
+      ${paceChart(cum, compare, { days: nDays, todayIdx: dayCount - 1, compareLabel, dates: datesIn(key) })}
       <div class="keys"><span><i class="k-line"></i>This month</span>${compare ? `<span><i class="k-line cmp"></i>${esc(compareLabel)}</span>` : ''}</div>
     </section>
     <section class="card">
@@ -732,7 +753,7 @@ function renderInsights() {
       ${barChart(dowData, { height: 140, summary: 'Spending by day of week' })}
     </section>
     <section class="card">
-      <div class="card-head"><h2>Last 6 months</h2></div>
+      <div class="card-head"><h2>Last 6 ${isCycle() ? 'cycles' : 'months'}</h2></div>
       ${barChart(months, { height: 160, summary: 'Monthly spending, last six months' })}
       <details class="table-toggle"><summary>Show as table</summary>
         <table class="data-table"><tbody>${months.map((m) => `<tr><td>${esc(m.sub)}</td><td class="num">${esc(money(m.value))}</td></tr>`).join('')}</tbody></table>
@@ -766,6 +787,8 @@ function renderSettings() {
       <label class="set-row"><span class="l"><span class="icon-tile accent">${icon('chart', 18)}</span><span><b>Monthly budget</b><small>Leave at 0 to hide</small></span></span>
         <input class="input num" id="set-budget" type="number" inputmode="decimal" min="0" step="10" value="${s.monthlyBudget || ''}" placeholder="0"></label>
       <button class="set-row" data-action="budgets"><span class="l"><span class="icon-tile">${icon('donut', 18)}</span><span><b>Category budgets</b><small>Monthly limits with early warnings</small></span></span><span class="faint num">${Object.keys(catLimits()).length || ''} ${icon('chevR', 16)}</span></button>
+      <label class="set-row"><span class="l"><span class="icon-tile">${icon('calendar', 18)}</span><span><b>Month starts on</b><small>Match your card's statement cycle</small></span></span>
+        <select class="select" id="set-startday">${Array.from({ length: 31 }, (_, i) => i + 1).map((d) => `<option value="${d}" ${d === SD() ? 'selected' : ''}>${d === 1 ? '1st (calendar)' : ordinal(d)}</option>`).join('')}</select></label>
       <label class="set-row"><span class="l"><span class="icon-tile">${icon('card', 18)}</span><span><b>Currency</b></span></span>
         <select class="select" id="set-currency">${currencies.map((c) => `<option ${c === s.currency ? 'selected' : ''}>${c}</option>`).join('')}</select></label>
       <label class="set-row"><span class="l"><span class="icon-tile">${icon('pen', 18)}</span><span><b>Your name</b><small>For the greeting</small></span></span>
@@ -799,6 +822,12 @@ function renderSettings() {
 
   $('#set-budget').addEventListener('change', (e) => store.setSettings({ monthlyBudget: Math.max(0, Number(e.target.value) || 0) }));
   $('#set-currency').addEventListener('change', (e) => { fmtCache.clear(); store.setSettings({ currency: e.target.value }); });
+  $('#set-startday').addEventListener('change', (e) => {
+    store.setSettings({ monthStartDay: normalizeStartDay(e.target.value) });
+    ui.month = monthOf(todayISO()); // jump to the budget month containing today
+    toast(SD() === 1 ? 'Months now follow the calendar' : `Your month now runs ${monthLabel(ui.month)}`);
+    render();
+  });
   $('#set-name').addEventListener('change', (e) => store.setSettings({ name: e.target.value.trim() }));
 }
 

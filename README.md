@@ -34,6 +34,9 @@ stored in the browser's local storage.
   screenshot to the installed app on Android, or enter an expense manually.
 - **Budget at a glance**: month total, budget progress, safe-to-spend per day,
   a month-end forecast, and a doughnut chart of where the money went.
+- **Your month, your cycle**: set **Settings → Month starts on** to your card's
+  statement day (for example the 10th) and every total, budget, forecast and
+  chart follows that cycle (Nov 10 – Dec 9) instead of the calendar month.
 - **Category budgets**: monthly limits per category with progress bars, a
   marker for where you'd be at an even pace, and a warning when an expense
   takes a category (or the month) past 80% or over its limit.
@@ -60,7 +63,7 @@ It is a static site with no build step and no dependencies.
 ```bash
 npm start          # or: python3 -m http.server 8080
 # open http://localhost:8080
-npm test           # parser and forecast tests (Node 18+)
+npm test           # parser, forecast and period tests (Node 18+)
 ```
 
 ### Put it on your phone (GitHub Pages)
@@ -86,11 +89,12 @@ js/app.js           views, sheets, scanning and review flow, charts
 js/parser.js        turns alert text into transactions (pure, unit-tested)
 js/categories.js    categories, icons, merchant keyword rules
 js/forecast.js      month-end forecast and budget thresholds (pure, unit-tested)
+js/period.js        budget months: calendar or billing cycle (pure, unit-tested)
 js/store.js         local-first storage, export / import
 js/ocr.js           image prep (upscale, dark-mode invert, tone curve) + Tesseract
 sw.js               offline cache and Android share target
 vendor/tesseract/   bundled OCR engine and English model (Apache-2.0)
-tests/              parser and forecast tests
+tests/              parser, forecast and period tests
 ```
 
 ## Privacy notes
